@@ -2,131 +2,117 @@
 
 <div dir="rtl" align="right" lang="fa">
 
-**اسکنر فارنزیک دیسک و موتور ترمیم مبتنی بر شواهد؛ یک فایل پایتون، بدون وابستگی.**
-
-</div>
-
-<div dir="ltr" align="left" lang="en">
-
-**Forensic disk scanner and evidence-based repair engine in one dependency-free Python file.**
-
-</div>
-
----
-
-<div dir="rtl" align="right" lang="fa">
-
 ## فارسی
 
-### چرا این ابزار ساخته شد
+**<bdi dir="ltr">DiskDoctor</bdi>** ابزار تک‌فایلی پایتون برای بررسی فارنزیک دیسک و طراحی ترمیم بر پایهٔ شواهد است. برای موقعیت‌هایی ساخته شده که پس از تغییر یا جابه‌جایی دیسک یا دیسک مجازی، پارتیشن یا فایل‌سیستم به‌درستی خوانده نمی‌شود.
 
-<bdi dir="ltr">DiskDoctor</bdi> از یک کار واقعی بازیابی داده بیرون آمد: چند <bdi dir="ltr">VMDK</bdi> که اصلاح شده و دوباره در ویندوز <bdi dir="ltr">Attach</bdi> شده بودند؛ یکی <bdi dir="ltr">RAW</bdi> شده بود و دیگری، یک فایل بکاپ <bdi dir="ltr">Veeam</bdi> (`.vbk`) را خراب می‌خواند. ابزار برای پاسخ به سه پرسش ساخته شده است: **این دیسک چه طرح پارتیشن‌بندی‌ای دارد، چه فایل‌سیستمی روی آن قرار دارد و خرابی تا چه اندازه عمیق است؟** سپس، و جداگانه، بررسی می‌کند که آیا نوشتن روی دیسک اصلاً امن است یا نه.
+> [!WARNING]
+> این پروژه فقط اشتراک تجربه و ابزاری برای بررسی اولیه است؛ بازیابی داده یا بی‌خطر بودن هیچ اقدامی را تضمین نمی‌کند. مسئولیت کامل هرگونه خرابی، ازدست‌رفتن داده و نتیجهٔ اجرای دستورها با کاربر است. پیش از هر اقدام، خروجی را بررسی کنید، از دیسک ایمیج بگیرید و فقط وقتی از هدف و نتیجهٔ مورد انتظار مطمئن هستید، اجازهٔ نوشتن بدهید.
 
-یک فایل، <bdi dir="ltr">Python 3.8+</bdi> و **بدون هیچ پکیج بیرونی**. روی ویندوز (هدف اصلی: دسترسی خام به `\\.\PhysicalDriveN`)، لینوکس (`/dev/sdX`) یا مستقیماً روی فایل ایمیج خام اجرا می‌شود.
+### کارکرد ابزار
 
-پیام‌های ابزار به‌صورت پیش‌فرض فارسی است (`--lang en` برای انگلیسی).
+DiskDoctor ابتدا سه موضوع را بررسی می‌کند:
 
-### چرا معماری‌اش این‌طور طراحی شده
+1. طرح پارتیشن‌بندی دیسک چیست؟
+2. روی هر پارتیشن چه فایل‌سیستمی قرار دارد؟
+3. آسیب تا چه حد عمیق است و آیا شواهد کافی برای ترمیم وجود دارد؟
 
-بیشتر ابزارهای ترمیم دیسک یا بدون توضیحِ چراییِ ایمن‌بودن، چیزی را تغییر می‌دهند، یا امضاهای خام را نمایش می‌دهند و تصمیم‌گیری را کاملاً به کاربر واگذار می‌کنند. وقتی داده‌ها در یک مخزنِ بکاپِ تولیدی <bdi dir="ltr">Veeam</bdi> هستند و هر نوشتن تصمیمی یک‌طرفه است، هیچ‌کدام کافی نیست.
+تنها پس از این بررسی‌ها، در صورت وجود شواهد کافی، طرح ترمیم پیشنهاد می‌شود. بدون <code>--apply</code> هیچ تغییری روی دیسک نوشته نمی‌شود.
 
-<bdi dir="ltr">DiskDoctor</bdi> سه لایه را کاملاً از هم جدا نگه می‌دارد:
+این برنامه با <bdi dir="ltr">Python 3.8+</bdi> و بدون وابستگی بیرونی اجرا می‌شود. هدف اصلی آن ویندوز و دسترسی مستقیم به <code>\\.\PhysicalDriveN</code> است، اما روی لینوکس (<code>/dev/sdX</code>) و فایل‌های ایمیج خام نیز کار می‌کند. پیام‌ها به‌طور پیش‌فرض فارسی‌اند؛ برای انگلیسی از <code>--lang en</code> استفاده کنید.
 
-```
-Scanner  →  Evidence Builder  →  Write Gate  →  Patch Transaction  →  Journal
-(خواندن)     (امتیازدهی، نه تصمیم)   (قواعد سخت)    (fsync قبل از نوشتن)   (برگشت بایت‌به‌بایت)
-```
+### رویکرد
 
-هیچ اقدام ترمیمی حق ندارد خودش تصمیم بگیرد که یک کاندید قابل اعتماد است. از لایه شواهد می‌پرسد، که یا اثبات برمی‌گرداند یا امتناع می‌کند — وقتی اثبات نباشد، هیچ <bdi dir="ltr">fallback</bdi> نرمی در کار نیست.
+پیدا کردن یک امضا به‌تنهایی اجازهٔ نوشتن نیست:
 
-### ابزار چه کاری می‌کند
+~~~text
+Scanner → Evidence Builder → Write Gate → Patch Transaction → Journal
+خواندن     جمع‌آوری شواهد     کنترل نوشتن    اعمال تغییر            بازگردانی
+~~~
 
-- **تشخیص** طرح‌های <bdi dir="ltr">GPT / MBR / superfloppy / RAW</bdi> و فایل‌سیستم‌های <bdi dir="ltr">NTFS، ReFS، exFAT، FAT12/16/32، ext2/3/4، XFS، Btrfs، Linux swap، LVM2، HFS+، APFS، ISO9660، VMFS و BitLocker</bdi>.
-- **امتیازدهی هر پارتیشن کاندید** بر اساس سیگنال‌های مستقل و قابل بازرسی (`--explain` همه را چاپ می‌کند): آیا از جدول پارتیشن آمده، آیا فیلدهای BPB بوت‌سکتورش با هم سازگارند، آیا نسخه آینه‌ای وجود دارد و مطابقت دارد، آیا طول اعلامی ولوم واقعاً از یک منبع روی دیسک اثبات‌پذیر است — نه صرفاً «یک امضا اینجا دیده شد».
-- **هیچ‌وقت طول پارتیشن را حدس نمی‌زند.** یک امضای فایل‌سیستم به‌تنهایی برای اعتماد به یک آفست کافی نیست؛ یک بوت‌سکتور آینه‌ی تنها (مثلاً از یک ولوم NTFS نابودشده) عمداً چک می‌شود تا با شروع یک ولوم جدید اشتباه گرفته نشود.
-- **بدون اثبات، نمی‌نویسد.** هر ترمیم یا `SAFE_RESTORE` است (کپی یک ساختار معتبر موجود روی همین دیسک — <bdi dir="ltr">GPT</bdi> پشتیبان → اصلی، یک بوت‌سکتور آینه اعتبارسنجی‌شده) یا `INFERRED_REBUILD` (سنتز یک جدول از صفر، که علاوه بر `--apply` به `--allow-inferred` صریح نیاز دارد). مسدودکننده‌های سراسری دیسک — جدول <bdi dir="ltr">GPT</bdi> با هندسهٔ ناسازگار با اندازهٔ واقعی دیسک، فایل کانتینر به‌جای دیسک خام، یا دیسک سیستمی — هر سنتزی را کاملاً متوقف می‌کنند.
-- **تشخیص عمق خرابی** (`--triage`) به‌جای فقط گفتن «بوت‌سکتور نیست»: سکتورهای اول را می‌خواند، انتهای ولوم را برای ساختارهای بازمانده می‌گردد، کل پارتیشن را نمونه‌برداری می‌کند و نقشه خرابی می‌سازد، رو به جلو برای اولین ساختار قابل‌بازیابی پویش می‌کند، و — نکته کلیدی — می‌تواند با یک **ولوم سالمِ کنترل** مقایسه کند تا آنتروپی خام با شاهد بازنویسی اشتباه گرفته نشود (یک <bdi dir="ltr">repository</bdi> پر از بکاپ فشرده، سالم یا خراب، آنتروپی بالا دارد).
-- **حالت یک‌ضرب** (`--auto`): همه دیسک‌ها را اسکن کن، فقط جایی که جدول نتواند دیسک را توصیف کند اسکن عمیق بزن، هر چیزی که سالم اثبات نشده را <bdi dir="ltr">triage</bdi> کن، خودکار یک ولوم کنترل انتخاب کن و یک گزارش متنی و یک <bdi dir="ltr">JSON</bdi> بنویس. هیچ بایتی روی هیچ دیسکی نوشته نمی‌شود.
-- **دفتر ثبت قبل از نوشتن.** <bdi dir="ltr">Journal</bdi> پیش از تغییر اولین بایت ساخته و <bdi dir="ltr">fsync</bdi> می‌شود، با وضعیت جداگانه برای هر <bdi dir="ltr">patch</bdi> (`pending` → `done`). یک <bdi dir="ltr">crash</bdi> در میانهٔ نوشتن، یک <bdi dir="ltr">Journal</bdi> برجا می‌گذارد که دقیقاً می‌گوید چه چیزی نوشته شده، و `--undo` آن را بایت‌به‌بایت برمی‌گرداند — حتی نسخهٔ نیمه‌کاره.
-- **ایمیج‌گیری فارنزیک**، نه بی‌صدا. خطای خواندن <bdi dir="ltr">retry</bdi> می‌شود، بعد به سطح سکتور نزول می‌کند؛ هر چیزی که هنوز خوانده نشود در یک `.badmap.json` صریح ثبت می‌شود با یک الگوی قابل‌تشخیص — هرگز یک صفر بی‌صدا که ممکن است با داده واقعی اشتباه شود.
-- **خودش را تست می‌کند** روی ایمیج‌های ساختگی که از روی مشخصات فنی خود فرمت‌ها ساخته شده‌اند (نه از روی فرض‌های خود پارسر) — به بخش [تست](#تست) نگاه کن.
+هر اقدام ترمیمی باید شواهد مستقل و قابل‌بررسی داشته باشد. اگر اثبات کافی وجود نداشته باشد، ابزار از ترمیم خودکار خودداری می‌کند.
 
-### آنچه عمداً انجام نمی‌دهد
+### قابلیت‌ها
 
-- هیچ ساختار <bdi dir="ltr">ReFS</bdi> هیچ‌وقت نوشته نمی‌شود. ترمیم <bdi dir="ltr">ReFS</bdi> در سطح سکتور انجام نمی‌شود؛ <bdi dir="ltr">DiskDoctor</bdi> شواهد جمع می‌کند (شامل یک نسخهٔ <bdi dir="ltr">volume header</bdi> نزدیک انتهای ولوم و فوق‌بلوک‌های تکراری `SUPB`/`CHKP`) و تو را به `refsutil salvage` هدایت می‌کند. این کار با بررسی سازگاری نسخهٔ <bdi dir="ltr">build</bdi> همراه است، چون سقف نسخهٔ <bdi dir="ltr">ReFS</bdi> که `refsutil` می‌شناسد به <bdi dir="ltr">build</bdi> ویندوز وابسته است؛ پیام شکست آن («فایل‌سیستم شناخته‌شده نیست») ممکن است در صورت ناهماهنگی نسخه، به‌اشتباه خرابی را القا کند.
-- بازسازی دیسک پویا (`LDM`) یا <bdi dir="ltr">Storage Spaces</bdi> انجام نمی‌شود؛ بازسازی جدول پارتیشن، ولوم‌های منطقی را برنمی‌گرداند.
-- بازیابی داده از ولومی که واقعاً بازنویسی شده باشد انجام نمی‌شود. اگر شواهد بگویند بدنهٔ ولوم بازنویسی شده است (نه فقط بوت‌سکتور آن)، <bdi dir="ltr">DiskDoctor</bdi> همین را گزارش می‌کند و به علت محتمل اشاره می‌کند؛ مثلاً نگاشت نادرست <bdi dir="ltr">extent</bdi> در <bdi dir="ltr">VMDK</bdi>.
+- شناسایی طرح‌های پارتیشن <bdi dir="ltr">GPT، MBR، superfloppy و RAW</bdi>.
+- شناسایی فایل‌سیستم‌های <bdi dir="ltr">NTFS، ReFS، exFAT، FAT12/16/32، ext2/3/4، XFS، Btrfs، Linux swap، LVM2، HFS+، APFS، ISO9660، VMFS و BitLocker</bdi>.
+- ارزیابی پارتیشن با تکیه بر جدول پارتیشن، سازگاری بوت‌سکتور، نسخهٔ پشتیبان و طول اثبات‌پذیر ولوم. جزئیات با <code>--explain</code> نمایش داده می‌شود.
+- اسکن عمیق برای یافتن ساختارهایی که جدول پارتیشن توصیف نمی‌کند.
+- بررسی عمق آسیب با <code>--triage</code>: نمونه‌برداری از ولوم، بررسی ابتدا و انتهای آن و جست‌وجوی ساختارهای باقی‌مانده.
+- ایمیج‌گیری فارنزیک با تلاش مجدد برای خواندن و ثبت محدوده‌های خوانده‌نشده در <code>.badmap.json</code>.
+- ساخت Journal پیش از نوشتن و بازگردانی بایت‌به‌بایت با <code>--undo</code>.
+- آزمایش داخلی روی ایمیج‌های ساختگی، بدون دسترسی به دیسک واقعی.
+
+### محدودیت‌های مهم
+
+- ساختارهای <bdi dir="ltr">ReFS</bdi> در سطح سکتور نوشته نمی‌شوند؛ ابزار فقط شواهد جمع می‌کند و ممکن است <code>refsutil salvage</code> یا ابزار تخصصی بازیابی را پیشنهاد دهد.
+- بازسازی دیسک پویا (<code>LDM</code>) یا <bdi dir="ltr">Storage Spaces</bdi> انجام نمی‌شود؛ بازسازی جدول پارتیشن، ولوم منطقی را برنمی‌گرداند.
+- بازیابی داده از ولومی که واقعاً بازنویسی شده، ممکن نیست. گزارش ابزار فقط به تشخیص وضعیت و انتخاب گام بعدی کمک می‌کند.
+- آنتروپی بالا به‌تنهایی نشانهٔ خرابی نیست؛ فایل‌های فشرده و مخزن‌های بکاپ نیز آنتروپی بالا دارند.
 
 ### شروع سریع
 
-```powershell
-# ویندوز، با دسترسی Administrator
+~~~powershell
+# ویندوز؛ PowerShell را با دسترسی Administrator اجرا کنید.
 chcp 65001
-python diskdoctor.py --self-test          # ۱۵۰+ تست ساختگی، به هیچ دیسک واقعی دست نمی‌زند
-python diskdoctor.py --list               # فهرست دیسک‌ها
-python diskdoctor.py --auto --all         # فقط خواندن، همه‌چیز، یک گزارش متنی+JSON
-```
+python diskdoctor.py --self-test
+python diskdoctor.py --list
+python diskdoctor.py --auto --all
+~~~
 
-```bash
+~~~bash
 # لینوکس
 sudo python3 diskdoctor.py --disk /dev/sdb --scan --explain --triage
 
-# مستقیم روی فایل ایمیج خام، بدون نیاز به دسترسی بالا
+# فایل ایمیج خام
 python3 diskdoctor.py --disk /path/to/flat.img --scan --explain
-```
+~~~
 
-راهنمای کامل همه سوییچ‌ها داخل خود ابزار است:
+راهنمای کامل:
 
-```
+~~~text
 python diskdoctor.py --help-full
-```
+~~~
 
-### دروازهٔ نوشتن، به‌طور دقیق
+### سطح‌های مجوز ترمیم
 
-| کلاس | معنی | نیاز به |
+| سطح | توضیح | نیازمندی |
 |---|---|---|
-| `SAFE_RESTORE` | منبع، یک ساختار معتبر موجود روی همین دیسک است. بدون استنتاج. | `--apply` |
-| `INFERRED_REBUILD` | ساختار از روی شواهد سنتز می‌شود. | `--apply --allow-inferred` |
-| `BLOCKED` | اجرا نمی‌شود و دلیل دقیق آن چاپ می‌شود. | (فقط `--force` از این محدودیت عبور می‌کند؛ این گزینه blockerهای سراسری دیسک را هم نادیده می‌گیرد.) |
+| <code>SAFE_RESTORE</code> | کپی ساختار معتبرِ موجود روی همان دیسک، بدون حدس‌زدن. | <code>--apply</code> |
+| <code>INFERRED_REBUILD</code> | بازسازی ساختار از روی شواهد. | <code>--apply --allow-inferred</code> |
+| <code>BLOCKED</code> | ترمیم انجام نمی‌شود و دلیل آن گزارش می‌شود. | فقط <code>--force</code> می‌تواند آن را دور بزند. |
 
-اقدام‌های ترمیمی:
+<code>--force</code> خطرناک است و می‌تواند مسدودکننده‌های ایمنیِ سطح دیسک را نادیده بگیرد. آن را فقط پس از تهیهٔ ایمیج و بررسی مستقل همهٔ شواهد استفاده کنید.
 
-`gpt-restore-primary`، `gpt-restore-backup`، `gpt-fix-crc`، `gpt-fix-geometry`، `mbr-write-protective`، `mbr-rebuild`، `gpt-rebuild`، `vbr-restore`، `vbr-restore-reverse`، `parttype-fix`، به‌علاوه `chkdsk`، `refsutil`، `rescan` سمت ویندوز.
+### روند پیشنهادی
 
-بازگردانی‌های <bdi dir="ltr">GPT</bdi> **بایت‌به‌بایت** هستند: `gpt-restore-primary` آرایهٔ ورودی‌های پشتیبان را عیناً کپی می‌کند و فقط فیلدهای موقعیت (`MyLBA`، `AlternateLBA`، `PartitionEntryLBA`) و <bdi dir="ltr">CRC</bdi> را در هدر جایگزین می‌کند — `entry_size`، <bdi dir="ltr">revision</bdi> و بایت‌های <bdi dir="ltr">reserved</bdi> هیچ‌وقت از نو ساخته نمی‌شوند.
-
-### روند کاری پیشنهادی
-
-```powershell
+~~~powershell
+# 1. بررسی ابزار و فهرست دیسک‌ها
 python diskdoctor.py --self-test
 python diskdoctor.py --list
+
+# 2. فقط‌خواندنی: ساختار، شواهد و عمق آسیب
 python diskdoctor.py --disk 3 --scan --explain --triage --json report.json
-python diskdoctor.py --disk 3 --image-out D:\img\disk3.img      # قبل از هر --apply
-python diskdoctor.py --disk 3 --action gpt-restore-primary               # پیش‌نمایش
-python diskdoctor.py --disk 3 --action gpt-restore-primary --apply       # اجرا
-python diskdoctor.py --undo diskdoctor_backups\journal_XXXX.json         # اگر غلط بود
-```
 
-یا فقط:
+# 3. پیش از هر ترمیم، ایمیج بگیرید
+python diskdoctor.py --disk 3 --image-out D:\img\disk3.img
 
-```powershell
-python diskdoctor.py --auto --all
-```
+# 4. ابتدا پیش‌نمایش؛ فقط در صورت اطمینان اجرا کنید
+python diskdoctor.py --disk 3 --action gpt-restore-primary
+python diskdoctor.py --disk 3 --action gpt-restore-primary --apply
 
-### آزمون
+# 5. بازگردانی در صورت نیاز
+python diskdoctor.py --undo diskdoctor_backups\journal_XXXX.json
+~~~
 
-```
-python diskdoctor.py --self-test
-```
+### آزمون و ایمنی
 
-ایمیج‌های ساختگی <bdi dir="ltr">MBR/GPT/NTFS/exFAT/FAT32/ReFS</bdi> را از روی مشخصات نوشته‌شده می‌سازد، نه بر پایهٔ فرض‌های خود پارسر. برای نمونه، ایمیج آزمون <bdi dir="ltr">FAT32</bdi> عمداً یک مقدار طعمه در همان آفستی می‌گذارد که پارسرِ دارای باگ می‌خواند؛ بنابراین، آزمون فقط وقتی موفق است که `BPB_BkBootSec` واقعاً از `0x32` خوانده شود. سپس کل خط لوله را می‌آزماید: تشخیص پارتیشن و فایل‌سیستم، امتیازدهی شواهد، امتناع <bdi dir="ltr">Write Gate</bdi> از بازسازی‌های اثبات‌نشده، بازگردانی‌های بایت‌به‌بایت <bdi dir="ltr">GPT</bdi>، تراکنش <bdi dir="ltr">Journal</bdi> پیش از نوشتن با برگشت نیمه‌کاره پس از <bdi dir="ltr">crash</bdi>، ایمیج‌گیری فارنزیک با خطای خواندن تزریق‌شده، و منطق کنترل آنتروپیِ <bdi dir="ltr">triage</bdi> در برابر یک ولوم واقعاً بازنویسی‌شده و یک ولوم سالم که صرفاً پر از دادهٔ فشرده است. هیچ‌چیز در این مجموعه به دیسک واقعی دست نمی‌زند.
+<code>--self-test</code> ایمیج‌های ساختگیِ <bdi dir="ltr">MBR، GPT، NTFS، exFAT، FAT32 و ReFS</bdi> می‌سازد و مسیرهای تشخیص، امتیازدهی شواهد، کنترل نوشتن، بازگردانی و ایمیج‌گیری را بررسی می‌کند. این آزمون به دیسک واقعی دست نمی‌زند.
 
-### نکات ایمنی
-
-- پیش‌فرض همیشه فقط-خواندنی است. بدون `--apply` هیچ‌چیز نوشته نمی‌شود.
-- قبل از هر `--apply` اول دیسک را ایمیج بگیر (`--image-out`).
-- اگر دیسک صدای غیرعادی می‌دهد یا <bdi dir="ltr">SMART</bdi> خراب است، متوقف شو — مستقیم برو سراغ بازیابی داده، نه ترمیم ساختار.
-- ترمیم ساختار، *ساختار* را برمی‌گرداند نه داده را. اگر متادیتای خود فایل‌سیستم رفته باشد، قدم بعدی بازیابی سطح فایل است، نه تلاش ترمیم دیگر.
+- حالت پیش‌فرض همیشه فقط‌خواندنی است.
+- پیش از هر <code>--apply</code>، از دیسک ایمیج بگیرید.
+- اگر دیسک صدای غیرعادی می‌دهد یا وضعیت <bdi dir="ltr">SMART</bdi> نامطلوب است، ترمیم ساختاری را متوقف کنید و سراغ بازیابی داده بروید.
+- ترمیم ساختار، دادهٔ ازدست‌رفته را برنمی‌گرداند. در صورت آسیب به فرادادهٔ فایل‌سیستم، بازیابی در سطح فایل لازم است.
 
 </div>
 
@@ -136,137 +122,120 @@ python diskdoctor.py --self-test
 
 ## English
 
-### Why this exists
+**DiskDoctor** is a single-file Python utility for forensic disk inspection and evidence-based repair planning. It is intended for cases where a disk or virtual-disk change leaves a partition layout or filesystem unreadable.
 
-DiskDoctor grew out of a real recovery job: VMware VMDKs that had been repaired and re-attached in Windows, one of which had gone RAW and another whose Veeam `.vbk` backup was reading corrupt. It answers three questions for a disk you're not sure about — *what partition scheme is this, what filesystem is on it, and how deep does the damage go* — and only then, separately, asks whether it's safe to write anything.
-
-Single file, Python 3.8+, **zero third-party dependencies**. Runs on Windows (primary target — raw `\\.\PhysicalDriveN` access), Linux (`/dev/sdX`), or directly against a raw disk image.
-
-Tool messages default to Persian (`--lang en` for English).
-
-### Why the architecture is shaped this way
-
-Most disk-repair tools either (a) fix things without telling you why they think it's safe, or (b) dump raw signatures at you and leave the judgment call to you. Neither is good enough when the data is a production Veeam repository and every write is a one-way door.
-
-DiskDoctor keeps three concerns strictly apart:
-
-```
-Scanner  →  Evidence Builder  →  Write Gate  →  Patch Transaction  →  Journal
-(read)      (score, don't act)   (hard rules)    (fsync before write)  (byte-exact undo)
-```
-
-A repair action never gets to decide for itself that a candidate looks trustworthy. It asks the evidence layer, which either hands back proof or refuses — there is no soft fallback when proof is missing.
+> [!WARNING]
+> This project is an experience-based reference and an aid for initial investigation. It does not guarantee data recovery or the safety of any action. You are solely responsible for data loss, damage, and every command you run. Review the findings, create an image, and confirm the target and expected outcome before permitting any write.
 
 ### What it does
 
-- **Detects** GPT / MBR / superfloppy / RAW partition schemes, and NTFS, ReFS, exFAT, FAT12/16/32, ext2/3/4, XFS, Btrfs, Linux swap, LVM2, HFS+, APFS, ISO9660, VMFS, BitLocker.
-- **Scores every candidate partition** on independent, inspectable signals (`--explain` prints all of them): does it come from a partition table, does its boot sector's own BPB fields agree with each other, does a backup copy exist and match, is the declared volume length actually provable from a source on disk — not just "a signature was seen here".
-- **Never guesses a partition's length.** A filesystem signature alone is not enough to trust an offset; a lone backup boot sector (e.g. from a destroyed NTFS volume) is specifically checked so it isn't mistaken for the start of a new volume.
-- **Refuses writes without proof.** Every repair is either `SAFE_RESTORE` (copying an existing, valid structure already on the disk — GPT backup → primary, a validated mirror boot sector) or `INFERRED_REBUILD` (synthesizing a table from scratch, which needs an explicit `--allow-inferred` on top of `--apply`). Disk-level blockers — a GPT whose geometry doesn't match the real disk size, a container file instead of a raw disk, a system disk — stop every synthesis outright.
-- **Triages damage depth** (`--triage`) instead of just saying "boot sector missing": reads the first sectors, sweeps the volume tail for surviving filesystem structures, samples the whole partition for a damage map, walks forward for the first recoverable structure, and — critically — can compare against a **known-healthy control volume** so raw entropy isn't mistaken for evidence of an overwrite (a repository full of compressed backups is high-entropy *by design*).
-- **One-shot mode** (`--auto`): scan every disk, go deep only where the table can't describe the disk, triage everything that isn't provably healthy, pick a control volume automatically, write one text report and one JSON file. Nothing is written to any disk.
-- **Journals before writing.** The journal is created and fsynced *before* the first byte changes, with per-patch status (`pending` → `done`). A crash mid-write leaves a journal that says exactly what landed, and `--undo` reverses it byte-for-byte — including a partial one.
-- **Images forensically**, not silently. Read failures retry, then descend to sector granularity; anything still unreadable is recorded in an explicit `.badmap.json` with a recognizable fill pattern — never a quiet zero that could be mistaken for real data.
-- **Self-tests itself** against synthetic disk images built from the on-disk specifications (not from the parser's own assumptions) — see [Testing](#testing).
+DiskDoctor first answers three questions:
 
-### What it deliberately does not do
+1. What partition scheme does the disk use?
+2. What filesystem is present on each partition?
+3. How deep is the damage, and is there sufficient evidence for repair?
 
-- No ReFS structure is ever written. ReFS repair is refused at the sector level; DiskDoctor gathers evidence (including a volume-header copy near the end of the volume, and duplicated `SUPB`/`CHKP` superblocks) and routes you to `refsutil salvage` — with a build-version compatibility check, because `refsutil`'s ReFS-version ceiling is tied to the Windows build it shipped with, and its failure message ("volume does not contain a recognized file system") is misleading when the real cause is a version mismatch, not corruption.
-- No dynamic disks (LDM) / Storage Spaces reconstruction — rebuilding the partition table does not bring back logical volumes.
-- No data recovery from a genuinely overwritten volume. If the evidence says the volume body was overwritten (not just its boot sector), DiskDoctor says so and points at the likely cause (e.g. a wrong VMDK extent mapping) instead of pretending a repair is possible.
+Only after that analysis does it offer a repair plan, and only when the evidence supports it. Nothing is written unless you explicitly add <code>--apply</code>.
+
+The tool runs on Python 3.8+ with no third-party dependencies. Its primary target is Windows with raw <code>\\.\PhysicalDriveN</code> access, but it also works on Linux (<code>/dev/sdX</code>) and raw disk-image files. Interface messages default to Persian; use <code>--lang en</code> for English.
+
+### Approach
+
+Finding a signature is not treated as permission to write:
+
+~~~text
+Scanner → Evidence Builder → Write Gate → Patch Transaction → Journal
+read       collect evidence   decide writes  apply change         undo safely
+~~~
+
+Every repair action needs independent, inspectable evidence. If proof is missing, the tool declines automatic repair.
+
+### Capabilities
+
+- Detects GPT, MBR, superfloppy, and RAW partition layouts.
+- Detects NTFS, ReFS, exFAT, FAT12/16/32, ext2/3/4, XFS, Btrfs, Linux swap, LVM2, HFS+, APFS, ISO9660, VMFS, and BitLocker.
+- Scores partition candidates using partition-table evidence, boot-sector consistency, backup copies, and provable volume length. Use <code>--explain</code> to inspect the evidence.
+- Performs deep scans for structures missed by, or inconsistent with, a partition table.
+- Uses <code>--triage</code> to assess damage depth by sampling the volume, examining its beginning and end, and searching for surviving structures.
+- Creates forensic images with read retries, explicit unreadable-range reporting, and a <code>.badmap.json</code> file.
+- Writes a journal before every change and can reverse changes byte-for-byte with <code>--undo</code>.
+- Runs internal tests against synthetic images without touching a real disk.
+
+### Important limitations
+
+- DiskDoctor never writes ReFS structures at the sector level. It gathers evidence and may point you to <code>refsutil salvage</code> or a specialist recovery tool.
+- It does not reconstruct dynamic disks (LDM) or Storage Spaces. Rebuilding a partition table does not restore logical volumes.
+- It cannot recover data from a genuinely overwritten volume. Its report helps identify the condition and choose the next step.
+- High entropy alone is not evidence of damage: compressed backup repositories can also have high entropy.
 
 ### Quick start
 
-```powershell
-# Windows, Run as Administrator
+~~~powershell
+# Windows: run PowerShell as Administrator.
 chcp 65001
-python diskdoctor.py --self-test          # 150+ synthetic tests, touches no real disk
-python diskdoctor.py --list               # enumerate disks
-python diskdoctor.py --auto --all         # read-only, everything, one text+JSON report
-```
+python diskdoctor.py --self-test
+python diskdoctor.py --list
+python diskdoctor.py --auto --all
+~~~
 
-```bash
+~~~bash
 # Linux
 sudo python3 diskdoctor.py --disk /dev/sdb --scan --explain --triage
 
-# Directly on a raw image file, no elevated privileges needed
+# Raw disk image
 python3 diskdoctor.py --disk /path/to/flat.img --scan --explain
-```
+~~~
 
-Full switch reference is embedded in the tool itself:
+For the complete command reference:
 
-```
+~~~text
 python diskdoctor.py --help-full
-```
+~~~
 
-### The write gate, concretely
+### Repair permissions
 
-| Gate | Meaning | Requires |
+| Class | Meaning | Requires |
 |---|---|---|
-| `SAFE_RESTORE` | Source is a valid structure that already exists on this disk. No inference. | `--apply` |
-| `INFERRED_REBUILD` | Structure is synthesized from evidence. | `--apply --allow-inferred` |
-| `BLOCKED` | Refused, with the exact reason printed. | (nothing bypasses this except `--force`, which also overrides disk-level blockers) |
+| <code>SAFE_RESTORE</code> | Copies a valid structure that already exists on the same disk. No inference. | <code>--apply</code> |
+| <code>INFERRED_REBUILD</code> | Rebuilds a structure from evidence. | <code>--apply --allow-inferred</code> |
+| <code>BLOCKED</code> | The repair is declined and the reason is reported. | Only <code>--force</code> can bypass this. |
 
-Repair actions:
+<code>--force</code> is dangerous and can override disk-level safety blockers. Use it only after imaging the disk and independently validating every relevant finding.
 
-`gpt-restore-primary`, `gpt-restore-backup`, `gpt-fix-crc`, `gpt-fix-geometry`, `mbr-write-protective`, `mbr-rebuild`, `gpt-rebuild`, `vbr-restore`, `vbr-restore-reverse`, `parttype-fix`, plus the Windows-side `chkdsk`, `refsutil`, `rescan`.
+### Suggested workflow
 
-GPT restores are **byte-for-byte**: `gpt-restore-primary` copies the backup's entry array verbatim and transplants only the location fields (`MyLBA`, `AlternateLBA`, `PartitionEntryLBA`) and CRC into the header — `entry_size`, revision, and reserved bytes are never regenerated.
-
-### Recommended workflow
-
-```powershell
+~~~powershell
+# 1. Verify the tool and list disks
 python diskdoctor.py --self-test
 python diskdoctor.py --list
+
+# 2. Read-only inspection: layout, evidence, and damage depth
 python diskdoctor.py --disk 3 --scan --explain --triage --json report.json
-python diskdoctor.py --disk 3 --image-out D:\img\disk3.img      # before any --apply
-python diskdoctor.py --disk 3 --action gpt-restore-primary               # preview
-python diskdoctor.py --disk 3 --action gpt-restore-primary --apply       # commit
-python diskdoctor.py --undo diskdoctor_backups\journal_XXXX.json         # if wrong
-```
 
-Or just:
+# 3. Image the disk before attempting any repair
+python diskdoctor.py --disk 3 --image-out D:\img\disk3.img
 
-```powershell
-python diskdoctor.py --auto --all
-```
+# 4. Preview first; apply only when you are certain
+python diskdoctor.py --disk 3 --action gpt-restore-primary
+python diskdoctor.py --disk 3 --action gpt-restore-primary --apply
 
-### Testing
+# 5. Undo if necessary
+python diskdoctor.py --undo diskdoctor_backups\journal_XXXX.json
+~~~
 
-```
-python diskdoctor.py --self-test
-```
+### Testing and safety
 
-Builds synthetic MBR/GPT/NTFS/exFAT/FAT32/ReFS images from the written specification (not from what the parser itself assumes — e.g. the FAT32 test image deliberately places a decoy value at the offset a buggy parser would read, so the test only passes if `BPB_BkBootSec` is actually read from `0x32`), then exercises the full pipeline: partition/filesystem detection, evidence scoring, the write gate refusing unproven rebuilds, byte-for-byte GPT restores, journal-before-write with crash-partial undo, forensic imaging with injected read failures, and the triage entropy-control logic against both a genuinely overwritten volume and a healthy one that merely happens to be full of compressed data. Nothing in the suite touches a real disk.
+<code>--self-test</code> creates synthetic MBR, GPT, NTFS, exFAT, FAT32, and ReFS images, then exercises detection, evidence scoring, write gating, undo, and imaging. It does not access a real disk.
 
-### Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | success |
-| 1 | general error |
-| 2 | bad argument |
-| 3 | permission denied |
-| 4 | target not found |
-| 5 | cancelled by user |
-| 6 | self-test failed |
-| 7 | write refused by the gate |
-
-### Safety notes
-
-- Default is always read-only. Nothing is written without `--apply`.
-- Image the disk first (`--image-out`) before any `--apply`.
-- If the disk makes unusual noise or SMART is failing, stop — go straight to data recovery, not structural repair.
-- Structural repair restores *structure*, not data. If the filesystem's own metadata is gone, the next step is file-level recovery, not another repair attempt.
+- The default mode is always read-only.
+- Create an image before every <code>--apply</code>.
+- If the disk makes unusual noise or has a failing SMART status, stop structural repair and move to data recovery.
+- Structural repair does not restore lost data. If filesystem metadata is damaged, file-level recovery may be required.
 
 </div>
 
 ---
 
-<div dir="ltr" align="left" lang="en">
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-</div>
