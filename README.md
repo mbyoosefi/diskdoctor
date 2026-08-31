@@ -1,9 +1,16 @@
 # DiskDoctor
 
+<div dir="rtl" align="right">
+
 **اسکنر فارنزیک دیسک + موتور ترمیم مبتنی بر شواهد، در یک فایل پایتون بدون هیچ وابستگی.**
+
+</div>
+
 **Forensic disk scanner + evidence-based repair engine, in one dependency-free Python file.**
 
 ---
+
+<div dir="rtl" align="right">
 
 ## فارسی
 
@@ -117,7 +124,11 @@ python diskdoctor.py --self-test
 - اگر دیسک صدای غیرعادی می‌دهد یا SMART خراب است، متوقف شو — مستقیم برو سراغ بازیابی داده، نه ترمیم ساختار.
 - ترمیم ساختار، *ساختار* را برمی‌گرداند نه داده را. اگر متادیتای خود فایل‌سیستم رفته باشد، قدم بعدی بازیابی سطح فایل است، نه تلاش ترمیم دیگر.
 
+</div>
+
 ---
+
+<div dir="ltr" align="left">
 
 ## English
 
@@ -243,6 +254,8 @@ Builds synthetic MBR/GPT/NTFS/exFAT/FAT32/ReFS images from the written specifica
 - Image the disk first (`--image-out`) before any `--apply`.
 - If the disk makes unusual noise or SMART is failing, stop — go straight to data recovery, not structural repair.
 - Structural repair restores *structure*, not data. If the filesystem's own metadata is gone, the next step is file-level recovery, not another repair attempt.
+
+</div>
 
 ---
 
