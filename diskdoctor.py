@@ -5743,8 +5743,10 @@ def self_test():
           bool(reasons) and any("refsutil" in x for x in reasons), reasons)
 
     # ================================================================= T21 ==
-    # Regressions found on a real 1 TiB VMware disk with a healthy GPT.
-    p21 = os.path.join(tmp, "real_layout.img")
+    # Regression: layout that combines an MSR partition, a saturated
+    # protective-MBR sector count, and a side-aware GPT backup header — the
+    # combination that previously produced false disk-level blockers.
+    p21 = os.path.join(tmp, "msr_layout.img")
     img21 = _Img(p21, 256 * MIB)
     tot21 = (256 * MIB) // 512
     msr_start, msr_end = 34, 32767
@@ -6085,9 +6087,9 @@ def self_test():
     check("T24 report is plain text without escape codes", "\x1b[" not in body)
 
     # ================================================================= T25 ==
-    # The false positive found on a real Veeam repository: a volume full of
-    # compressed backups samples as ~100% high entropy whether it is damaged or
-    # not. Entropy must not be treated as evidence of damage on its own.
+    # Regression: a volume full of compressed backup files samples as ~100%
+    # high entropy whether it is damaged or not. Entropy must not be treated
+    # as evidence of damage on its own.
     def _fill(img, lba_from, lba_to, block):
         with open(img.path, "r+b") as f:
             f.seek(lba_from * img.sector)
