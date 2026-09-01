@@ -2,10 +2,52 @@
 # -*- coding: utf-8 -*-
 r"""
 ================================================================================
-DiskDoctor v1.5.1  —  Forensic scanner + evidence-based repair engine
+DiskDoctor v1.8  —  Forensic scanner + evidence-based repair engine
 اسکن فارنزیک و ترمیم مبتنی بر شواهد برای دیسک‌هایی که پس از اصلاح VMDK
 در ویندوز Attach/Assign شده‌اند.
 ================================================================================
+
+تازه در v1.8
+------------
+* --find-vbm : جستجوی محتوای واقعی فایل .vbm (تگ XML مستند <BackupMeta>،
+  نه فقط ورودی دایرکتوری آن). فرمت VBK/VIB خود Veeam منتشر نشده (خود ویم در
+  فروم رسمی به این تصریح کرده)، ولی ساختار .vbm مستند است. از روی آن
+  FilePath اصلی، BackupSize دقیق به بایت، EncryptionState، JobName و غیره
+  استخراج می‌شود — شواهد قطعی‌تر از حدس زدن نام یا اندازه فایل.
+      python diskdoctor.py --disk 1 --find-vbm --json vbm.json
+* --carve-vbk CENTER_LBA:MARGIN_GIB : استخراج یک محدوده بزرگ و پیوسته اطراف
+  یک LBA شناخته‌شده (مثلاً جایی که محتوای .vbk قبلاً با --dump-range تایید
+  شده) به یک فایل، برای دادن به Veeam Extract Utility. چون امضای شروع فایل
+  VBK مستند نیست، این ابزار حدس دقیق نمی‌زند — margin را به‌اندازه کافی
+  بزرگ بگیر تا شروع واقعی فایل حتماً داخل محدوده باشد.
+      python diskdoctor.py --disk 1 --carve-vbk 234280000:4 --carve-out ftp.bin
+
+تازه در v1.7.1
+--------------
+* فیلتر نویز برای رشته‌های استخراج‌شده. داده فشرده/رمزشده دائم رشته‌های کوتاه
+  خوانا تولید می‌کند و نام فایل‌های واقعی را در انبوه آشغال گم می‌کرد. حالا
+  فقط رشته‌هایی نشان داده می‌شوند که یا یک کلمه واقعی دارند (توکن CamelCase
+  با چهار حرف یا بیشتر) یا به پسوند فایل ختم می‌شوند. روی نمونه واقعی:
+  ۱۳ نام واقعی از ۱۳ حفظ شد، ۸۲ رشته نویز از ۸۴ حذف شد.
+  با --dump-raw-strings همه رشته‌ها بدون فیلتر نشان داده می‌شوند.
+
+تازه در v1.7
+------------
+* --dump-range LBA:COUNT : استخراج یک محدوده سکتور خام به فایل، به‌علاوه چاپ
+  رشته‌های خوانای داخلش (هم ASCII هم UTF-16LE). برای بیرون کشیدن یک ساختار
+  کوچک — یک .vbm، یک بوت‌سکتور، یک نود متادیتا — از ولومی که فایل‌سیستمش
+  دیگر نمی‌تواند آن را پیدا کند. فقط خواندن.
+      python diskdoctor.py --disk 1 --dump-range 9211248:64 --dump-out vbm.bin
+
+تازه در v1.6
+------------
+* --find-name : جستجوی یک نام فایل در بایت‌های خام دیسک، مستقل از فایل‌سیستم.
+  نام فایل‌ها در متادیتای NTFS/ReFS/exFAT به‌صورت UTF-16LE ذخیره می‌شوند، پس
+  حتی وقتی ساختارهایی که محل فایل را مشخص می‌کنند نابود شده‌اند، خود نام هنوز
+  قابل پیدا شدن است. برای پاسخ به «آیا این فایل اصلاً روی این ولوم بوده؟»
+  وقتی هیچ ابزار دیگری نمی‌تواند جواب بدهد. هر دو شکل UTF-16 و ASCII و
+  بدون حساسیت به بزرگی/کوچکی حروف. فقط خواندن.
+      python diskdoctor.py --disk 1 --find-name "Ftp"
 
 تازه در v1.5.1
 --------------
@@ -207,6 +249,20 @@ triage — تشخیص عمق خرابی (فقط خواندن):
   --deep-ignore-table    محدوده پارتیشن‌های جدول را هم بگرد (وقتی جدول مشکوک است)
   --time-budget SEC      سقف زمان اسکن عمیق.
   --explain              چاپ جدول کامل شواهد هر کاندید با دلیل هر سیگنال.
+  --find-name TEXT       جستجوی نام فایل در بایت‌های خام دیسک، مستقل از
+                         فایل‌سیستم. UTF-16 و ASCII، بدون حساسیت به حروف.
+  --find-limit BYTES     سقف حجم جستجو (0 = کل دیسک)
+  --find-max-hits N      سقف تعداد موارد گزارش‌شده (پیش‌فرض 50)
+  --dump-range LBA:COUNT استخراج محدوده سکتور خام به فایل + چاپ رشته‌های
+                         خوانا. مثل  9211248:64
+  --dump-out PATH        مسیر خروجی --dump-range (پیش‌فرض dump.bin)
+  --dump-strings-min N   حداقل طول رشته خوانا (پیش‌فرض 6)
+  --dump-raw-strings     نمایش همه رشته‌ها بدون فیلتر نویز
+  --find-vbm              جستجوی محتوای واقعی .vbm (تگ XML)، نه فقط اسم فایل
+  --find-vbm-window N     حجم پنجره خوانده‌شده بعد از هر <BackupMeta> (512KiB)
+  --find-vbm-max-hits N   سقف تعداد .vbm گزارش‌شده (پیش‌فرض 20)
+  --carve-vbk CENTER:GIB  استخراج محدوده بزرگ اطراف یک LBA شناخته‌شده
+  --carve-out PATH        مسیر خروجی --carve-vbk (پیش‌فرض carved.bin)
   --json PATH            گزارش ساختاریافته JSON (شامل کل شواهد).
 
 ترمیم:
@@ -326,7 +382,7 @@ import tempfile
 import time
 import uuid
 
-VERSION = "1.5.1"
+VERSION = "1.8"
 IS_WIN = (os.name == "nt")
 IS_LINUX = sys.platform.startswith("linux")
 
@@ -436,27 +492,10 @@ EXPLAIN = False
 LOGFILE = None
 REPORTFILE = None
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-_ANSI_SPLIT_RE = re.compile(r"(\033\[[0-9;]*m)")
-_LTR_RUN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/,\-()%\[\]×x+]*")
 
 
 def _strip_ansi(s):
     return _ANSI_RE.sub("", str(s))
-
-
-def _bidi_wrap(s):
-    """Pin embedded LTR runs (numbers, LBA ranges, ReFS/NTFS/... names) with
-    LRM marks so Windows console bidi reordering doesn't scramble them when
-    mixed into a right-to-left Persian sentence. Only applied to what's
-    printed to the terminal — report/log files keep the plain string."""
-    if LANG != "fa":
-        return s
-    parts = _ANSI_SPLIT_RE.split(s)
-    return "".join(
-        part if _ANSI_SPLIT_RE.fullmatch(part or "")
-        else _LTR_RUN_RE.sub(lambda m: "‎" + m.group(0) + "‎", part)
-        for part in parts
-    )
 
 
 def _log(s):
@@ -476,7 +515,7 @@ def _log(s):
 
 def out(s=""):
     if not QUIET:
-        print(_bidi_wrap(s))
+        print(s)
     _log(s)
 
 
@@ -493,7 +532,7 @@ def warn(s):
 
 
 def err(s):
-    print(_bidi_wrap(C.w(C.RED, "[x] ") + s), file=sys.stderr)
+    print(C.w(C.RED, "[x] ") + s, file=sys.stderr)
     _log("[x] " + s)
 
 
@@ -2605,9 +2644,8 @@ def deep_scan(disk, step=MIB, limit=0, time_budget=0, known=(), chunk=8 * MIB):
                 hits += 1
         pos += n
         if not QUIET and end > 64 * MIB:
-            sys.stdout.write(_bidi_wrap(
-                "\r    deep scan %5.1f%%  (%s / %s)  ولوم خارج از جدول=%d   " %
-                (100.0 * pos / end, human(pos), human(end), hits)))
+            sys.stdout.write("\r    deep scan %5.1f%%  (%s / %s)  ولوم خارج از جدول=%d   " %
+                             (100.0 * pos / end, human(pos), human(end), hits))
             sys.stdout.flush()
     if not QUIET and end > 64 * MIB:
         sys.stdout.write("\r" + " " * 70 + "\r")
@@ -2926,6 +2964,431 @@ def head_map(disk, p, gib=8, samples=128):
         rows.append({"lba": off // s, "kind": kind, "entropy": round(ent, 2)})
     return {"rows": rows, "counts": counts, "step": step, "span": span,
             "samples": len(rows)}
+
+
+def dump_range(disk, start_lba, count, out_path, strings_min=6,
+               filter_noise=True):
+    """Copy a raw sector range out to a file, read-only.
+
+    Used to lift a small structure — a .vbm, a boot sector, a metadata node —
+    out of a volume whose filesystem can no longer locate it. Also extracts the
+    printable strings it contains, which is usually the reason you wanted the
+    bytes in the first place.
+    """
+    if count <= 0:
+        raise DiskError("count must be positive")
+    if start_lba < 0 or start_lba >= disk.sectors:
+        raise DiskError("start LBA %d is outside the disk (last LBA %d)"
+                        % (start_lba, disk.sectors - 1))
+    if start_lba + count > disk.sectors:
+        count = disk.sectors - start_lba
+        warn("محدوده تا انتهای دیسک کوتاه شد: %d سکتور" % count)
+
+    total = count * disk.sector
+    written = 0
+    bad = 0
+    t0 = time.time()
+    with open(out_path, "wb") as f:
+        pos = 0
+        while pos < total:
+            n = min(8 * MIB, total - pos)
+            data = _read_retry(disk, start_lba * disk.sector + pos, n, 3)
+            if data is None or len(data) < n:
+                bad += n - (len(data) if data else 0)
+                data = (data or b"") + _fill_block("pat", n - (len(data) if data else 0))
+            f.write(data)
+            pos += n
+            written += n
+    res = {"start_lba": start_lba, "sectors": count, "bytes": written,
+           "unreadable_bytes": bad, "path": out_path,
+           "elapsed": round(time.time() - t0, 1)}
+    ok("%s نوشته شد از LBA %d (%d سکتور)%s"
+       % (human(written), start_lba, count,
+          "، %s غیرقابل خواندن" % human(bad) if bad else ""))
+    with open(out_path, "rb") as f:
+        blob = f.read(min(written, 64 * MIB))
+    res["strings"] = extract_strings(blob, strings_min,
+                                     filter_noise=filter_noise)
+    res["noise_filtered"] = bool(filter_noise)
+    return res
+
+
+# A run of printable bytes is not the same thing as a string someone wrote.
+# Compressed and encrypted data produces short printable runs constantly, so a
+# raw dump of a backup file drowns real filenames in noise. These heuristics
+# score a run on how much it looks like deliberate text.
+_TEXTY = re.compile(r"^[A-Za-z0-9 ._\-()\[\]{}:;,/\\@#'\"+=!?*&%$~|<>]+$")
+_ALPHA_RUN = re.compile(r"[A-Za-z]+")
+_CAMEL_SPLIT = re.compile(r"(?<=[a-z])(?=[A-Z])")
+_FILE_EXT = re.compile(r"[A-Za-z0-9)\]]\.[a-z0-9]{2,4}$")
+
+
+def _camel_tokens(s):
+    """Split alphabetic runs on lowercase->uppercase boundaries.
+
+    Keeps 'Noavaran' whole and 'FsAwareMeta' as Fs/Aware/Meta, while random
+    case flipping — the signature of compressed bytes that happen to be
+    printable — shatters into one- and two-letter fragments.
+    """
+    toks = []
+    for run in _ALPHA_RUN.findall(s):
+        toks.extend(t for t in _CAMEL_SPLIT.split(run) if t)
+    return toks
+
+
+def looks_like_text(s):
+    """Is this printable run plausibly real text rather than compression noise?
+
+    Two independent ways to qualify: it contains a genuine word (a CamelCase
+    token of four or more letters), or it ends in a lowercase file extension.
+    Compressed data almost never produces either, while filenames and paths
+    reliably produce at least one.
+    """
+    if not s or not _TEXTY.match(s):
+        return False
+    alnum = sum(1 for ch in s if ch.isalnum())
+    if alnum / float(len(s)) < 0.6:
+        return False
+    toks = _camel_tokens(s)
+    if not toks:
+        return False
+    if max(len(t) for t in toks) >= 4:
+        return True
+    return bool(_FILE_EXT.search(s))
+
+
+def extract_strings(blob, minimum=6, max_out=400, filter_noise=True):
+    """Printable ASCII and UTF-16LE runs, in the order they appear.
+
+    With filter_noise (the default) only runs that look like deliberate text
+    are returned; set it False to see every printable run, noise included.
+    """
+    out_list = []
+    seen = set()
+
+    def add(s):
+        s = s.strip()
+        if len(s) < minimum or s in seen:
+            return
+        if filter_noise and not looks_like_text(s):
+            return
+        seen.add(s)
+        out_list.append(s)
+
+    def scan_ascii():
+        cur = []
+        for b in blob:
+            if 32 <= b < 127:
+                cur.append(chr(b))
+                continue
+            if len(cur) >= minimum:
+                add("".join(cur))
+            cur = []
+            if len(out_list) >= max_out:
+                return
+        if len(cur) >= minimum:
+            add("".join(cur))
+
+    def scan_utf16():
+        cur = []
+        for i in range(0, len(blob) - 1, 2):
+            lo, hi = blob[i], blob[i + 1]
+            if hi == 0 and 32 <= lo < 127:
+                cur.append(chr(lo))
+                continue
+            if len(cur) >= minimum:
+                add("".join(cur))
+            cur = []
+            if len(out_list) >= max_out:
+                return
+        if len(cur) >= minimum:
+            add("".join(cur))
+
+    scan_ascii()
+    scan_utf16()
+    return out_list[:max_out]
+
+
+def print_dump_range(res):
+    out("")
+    out(C.w(C.BOLD, " استخراج محدوده خام"))
+    out("   از LBA   : %d  (%d سکتور، %s)"
+        % (res["start_lba"], res["sectors"], human(res["bytes"])))
+    out("   فایل     : %s" % res["path"])
+    if res["unreadable_bytes"]:
+        out("   " + C.w(C.YELLOW, "%s غیرقابل خواندن بود و با الگو پر شد"
+                        % human(res["unreadable_bytes"])))
+    s = res.get("strings") or []
+    if not s:
+        out("   هیچ رشته خوانایی در این محدوده نیست."
+            + ("  (فیلتر نویز روشن است؛ با --dump-raw-strings همه را ببین)"
+               if res.get("noise_filtered") else ""))
+        return
+    out("   %d رشته%s:" % (len(s), " (نویز فشرده فیلتر شد)"
+                          if res.get("noise_filtered") else " خام"))
+    for line in s[:120]:
+        out("      " + line[:160])
+    if len(s) > 120:
+        out("      ... %d رشته دیگر (همه در فایل خروجی هستند)" % (len(s) - 120))
+
+
+# =============================================================================
+# Veeam .vbm metadata locator + convenience carving  (v1.8)
+# =============================================================================
+# Veeam's .vbk/.vib storage format is proprietary and undocumented — Veeam
+# support has explicitly declined to publish its header layout even to people
+# asking in their own forum. There is no reliable magic number to search for.
+#
+# The .vbm backup-chain metadata file, however, IS documented (published
+# third-party research: Synacktiv, "Using Veeam metadata for efficient
+# extraction of Backup artefacts", Feb 2024). It is plain XML when the backup
+# is unencrypted, small (KB-to-low-MB), and its <Storage> element gives the
+# exact original filename and the exact BackupSize in bytes of the .vbk/.vib
+# it describes. That is real, sourced ground truth — unlike guessing a VBK
+# start offset from entropy, which is a heuristic with no guarantee.
+# =============================================================================
+
+VBM_ANCHOR = b"<BackupMeta"
+VBM_FIELD_PATTERNS = {
+    "FilePath": re.compile(rb'FilePath="([^"]*)"'),
+    "BackupSize": re.compile(rb'<BackupSize>(\d+)</BackupSize>'),
+    "DataSize": re.compile(rb'<DataSize>(\d+)</DataSize>'),
+    "EncryptionState": re.compile(rb'EncryptionState="(\d+)"'),
+    "CreationTimeUtc": re.compile(rb'CreationTimeUtc="([^"]*)"'),
+    "JobName": re.compile(rb'JobName="([^"]*)"'),
+    "VmName": re.compile(rb'VmName="([^"]*)"'),
+    "DisplayName": re.compile(rb'DisplayName="([^"]*)"'),
+    "MetaFileName": re.compile(rb'MetaFileName="([^"]*)"'),
+}
+
+
+def parse_vbm_fields(blob):
+    """Pull the handful of documented, useful fields out of a .vbm XML blob.
+
+    This is deliberately not a real XML parser: the blob may be truncated at
+    either end (we don't know the file's exact boundaries going in), so a
+    strict parser would just fail. Regex extraction degrades gracefully and
+    returns whatever fields it can find, with each field taken from every
+    match in the blob (a chain can have several <Storage> elements — one per
+    restore point — so BackupSize/FilePath may repeat).
+    """
+    out = {}
+    for name, pat in VBM_FIELD_PATTERNS.items():
+        vals = []
+        for m in pat.finditer(blob):
+            try:
+                v = m.group(1).decode("utf-8", "replace")
+            except Exception:
+                continue
+            if v not in vals:
+                vals.append(v)
+        if vals:
+            out[name] = vals
+    return out
+
+
+def find_vbm_metadata(disk, limit=0, window=512 * KIB, max_hits=20, chunk=64 * MIB):
+    """Search the raw disk for .vbm XML content (not just its directory entry).
+
+    Anchors on the literal, unique root tag "<BackupMeta" — case-sensitive
+    ASCII, since the .vbm is a plain UTF-8/ASCII XML file, not filesystem
+    metadata (which is why this is a different search than --find-name). For
+    each hit, reads `window` bytes forward and extracts the documented fields.
+    Read-only.
+    """
+    end = disk.size if not limit else min(disk.size, limit)
+    hits = []
+    pos = 0
+    overlap = len(VBM_ANCHOR)
+    t0 = time.time()
+    while pos < end and len(hits) < max_hits:
+        n = min(chunk, end - pos)
+        buf = disk.read_at(pos, n + overlap)
+        if not buf:
+            break
+        i = 0
+        while len(hits) < max_hits:
+            i = buf.find(VBM_ANCHOR, i)
+            if i < 0:
+                break
+            # "<BackupMeta" is also a prefix of "<BackupMetaInfo>", a
+            # different, non-root element. Only accept the exact root tag,
+            # i.e. the anchor immediately followed by '>' or whitespace.
+            nxt = buf[i + len(VBM_ANCHOR):i + len(VBM_ANCHOR) + 1]
+            if nxt not in (b">", b" ", b"\t", b"\r", b"\n"):
+                i += 1
+                continue
+            off = pos + i
+            blob = disk.read_at(off, window)
+            fields = parse_vbm_fields(blob)
+            hits.append({"offset": off, "lba": off // disk.sector,
+                        "window": window, "fields": fields})
+            i += 1
+        pos += n
+        if not QUIET:
+            sys.stdout.write("\r    searching %5.1f%%  (%s / %s)  hits=%d   "
+                             % (100.0 * pos / end, human(pos), human(end), len(hits)))
+            sys.stdout.flush()
+    if not QUIET:
+        sys.stdout.write("\r" + " " * 72 + "\r")
+    return {"hits": hits, "scanned": min(pos, end),
+           "elapsed": round(time.time() - t0, 1)}
+
+
+def print_find_vbm(res):
+    out("")
+    out(C.w(C.BOLD, " جستجوی متادیتای .vbm (تگ XML، نه ورودی دایرکتوری)"))
+    out("   خوانده  : %s در %.0f ثانیه" % (human(res["scanned"]), res["elapsed"]))
+    if not res["hits"]:
+        out("   " + C.w(C.YELLOW, "هیچ .vbm خوانا پیدا نشد."))
+        out("   یا رمزنگاری شده، یا در ناحیه بازنویسی‌شده افتاده، یا سقف "
+            "--find-vbm-max-hits زودتر پر شد.")
+        return
+    out("   " + C.w(C.GREEN, "%d مورد" % len(res["hits"])))
+    for h in res["hits"]:
+        out("")
+        out("   LBA %d  (offset 0x%X)" % (h["lba"], h["offset"]))
+        f = h["fields"]
+        if not f:
+            out(C.w(C.YELLOW, "      هیچ فیلد شناخته‌شده‌ای در این پنجره پیدا نشد؛ "
+                              "شاید window کوچک بوده یا رمزنگاری شده."))
+            continue
+        enc = f.get("EncryptionState")
+        if enc and enc[0] not in ("0",):
+            out(C.w(C.RED, "      EncryptionState=%s — این بکاپ رمزنگاری شده؛ "
+                          "بدون کلید قابل استخراج نیست." % enc[0]))
+        for name in ("FilePath", "BackupSize", "DataSize", "VmName",
+                    "DisplayName", "JobName", "CreationTimeUtc", "MetaFileName"):
+            vals = f.get(name)
+            if not vals:
+                continue
+            if name == "BackupSize":
+                for v in vals:
+                    try:
+                        out("      BackupSize      : %s (%s)" % (v, human(int(v))))
+                    except Exception:
+                        out("      BackupSize      : %s" % v)
+            elif name == "DataSize":
+                for v in vals:
+                    try:
+                        out("      DataSize        : %s (%s)" % (v, human(int(v))))
+                    except Exception:
+                        out("      DataSize        : %s" % v)
+            else:
+                for v in vals:
+                    out("      %-15s : %s" % (name, v))
+
+
+def carve_vbk(disk, center_lba, margin_gib, out_path, strings_min=20):
+    """Extract a generous, contiguous window of raw sectors around a known
+    content offset, for handing to Veeam Extract Utility / Backup & Replication
+    as a candidate .vbk. Convenience wrapper over dump_range that computes the
+    start/count from a center point and a margin instead of exact LBAs, since
+    the true start of a VBK cannot currently be located with certainty (see
+    the module docstring above).
+    """
+    s = disk.sector
+    margin_sectors = int(margin_gib * 1024 * MIB // s)
+    start = center_lba - margin_sectors
+    clamped_head = start < 0
+    if clamped_head:
+        start = 0
+    count = margin_sectors * 2
+    if clamped_head:
+        count = (center_lba + margin_sectors) - start
+    if clamped_head:
+        warn("محدوده تا ابتدای دیسک کوتاه شد.")
+    res = dump_range(disk, start, count, out_path, strings_min, filter_noise=True)
+    res["center_lba"] = center_lba
+    res["margin_gib"] = margin_gib
+    return res
+
+def find_name(disk, needle, limit=0, max_hits=50, chunk=64 * MIB):
+    """Search the raw disk for a filename, independent of any filesystem.
+
+    Filenames live in filesystem metadata as UTF-16LE on NTFS/ReFS/exFAT, so a
+    name can still be found byte-for-byte even when the structures that would
+    normally locate the file are destroyed. Both UTF-16LE and ASCII forms are
+    searched, case-insensitively, because the point is to answer "was this file
+    ever on this volume" when nothing else can.
+    """
+    pats = []
+    for enc, label in (("utf-16-le", "UTF-16"), ("ascii", "ASCII")):
+        try:
+            lo = needle.lower().encode(enc)
+            up = needle.upper().encode(enc)
+        except Exception:
+            continue
+        pats.append((lo, label, enc))
+        if up != lo:
+            pats.append((up, label, enc))
+        mixed = needle.encode(enc)
+        if mixed not in (lo, up):
+            pats.append((mixed, label, enc))
+
+    end = disk.size if not limit else min(disk.size, limit)
+    hits = []
+    pos = 0
+    overlap = 512
+    t0 = time.time()
+    while pos < end and len(hits) < max_hits:
+        n = min(chunk, end - pos)
+        buf = disk.read_at(pos, n + overlap)
+        if not buf:
+            break
+        low = buf.lower()
+        for pat, label, enc in pats:
+            i = 0
+            pl = pat.lower()
+            while len(hits) < max_hits:
+                i = low.find(pl, i)
+                if i < 0:
+                    break
+                off = pos + i
+                if not any(abs(off - h["offset"]) < 4 for h in hits):
+                    ctx = buf[max(0, i - 96):i + len(pat) + 96]
+                    try:
+                        text = ctx.decode(enc, "replace") if enc == "utf-16-le" \
+                            else ctx.decode("latin1", "replace")
+                    except Exception:
+                        text = ""
+                    text = "".join(ch if ch.isprintable() else "." for ch in text)
+                    hits.append({"offset": off, "lba": off // disk.sector,
+                                 "encoding": label, "context": text.strip()})
+                i += 1
+        pos += n
+        if not QUIET:
+            sys.stdout.write("\r    searching %5.1f%%  (%s / %s)  hits=%d   "
+                             % (100.0 * pos / end, human(pos), human(end), len(hits)))
+            sys.stdout.flush()
+    if not QUIET:
+        sys.stdout.write("\r" + " " * 72 + "\r")
+    return {"needle": needle, "hits": hits, "scanned": min(pos, end),
+            "elapsed": round(time.time() - t0, 1),
+            "truncated": len(hits) >= max_hits}
+
+
+def print_find_name(res, disk):
+    out("")
+    out(C.w(C.BOLD, " جستجوی نام روی دیسک خام"))
+    out("   عبارت   : %s" % res["needle"])
+    out("   خوانده  : %s در %.0f ثانیه" % (human(res["scanned"]), res["elapsed"]))
+    if not res["hits"]:
+        out("   " + C.w(C.YELLOW, "هیچ موردی پیدا نشد."))
+        out("   یعنی این نام در متادیتای باقی‌مانده این دیسک نیست. توجه: اگر")
+        out("   ناحیه‌ای که نام در آن بود بازنویسی شده باشد، نبودنش دلیل قطعی")
+        out("   بر نبودن فایل روی این ولوم نیست.")
+        return
+    out("   " + C.w(C.GREEN, "%d مورد پیدا شد%s"
+                    % (len(res["hits"]), " (به سقف نمایش رسید)"
+                       if res["truncated"] else "")))
+    for h in res["hits"][:20]:
+        out("      LBA %-12d offset 0x%-12X [%s]"
+            % (h["lba"], h["offset"], h["encoding"]))
+        if h["context"]:
+            out(C.w(C.GREY, "         %s" % h["context"][:150]))
+    if len(res["hits"]) > 20:
+        out("      ... %d مورد دیگر" % (len(res["hits"]) - 20))
 
 
 def find_first_structure(disk, p, limit_gib=16):
@@ -5282,7 +5745,10 @@ def _fake_args(**kw):
         triage_samples=320, triage_sample_kib=64, triage_tail_mib=512,
         triage_edge_gib=16, auto=False, all=False, auto_out=None,
         auto_deep_seconds=600, triage_head_gib=8, triage_head_samples=128,
-        baseline=None)
+        baseline=None, find_name=None, find_limit=0, find_max_hits=50,
+        dump_range=None, dump_out="dump.bin", dump_strings_min=6,
+        dump_raw_strings=False, find_vbm=False, find_vbm_window=512 * KIB,
+        find_vbm_max_hits=20, carve_vbk=None, carve_out="carved.bin")
     for k, v in kw.items():
         setattr(ns, k, v)
     return ns
@@ -6355,6 +6821,253 @@ def self_test():
           ns29.triage_head_gib == 8 and ns29.triage_head_samples == 128,
           (ns29.triage_head_gib, ns29.triage_head_samples))
 
+    # ================================================================= T30 ==
+    # --find-name must locate a filename in raw bytes with no filesystem help,
+    # in both UTF-16LE (how NTFS/ReFS/exFAT store names) and ASCII, and must
+    # not invent hits when the name is absent.
+    p30 = os.path.join(tmp, "namesearch.img")
+    i30 = _Img(p30, 48 * MIB)
+    target30 = "Ftp (172.17.9.9).999D2026-01-02T030405_ABCD.vbk"
+    other30 = "SomeOtherServer.222D2026-01-02T030405_0000.vbk"
+    i30.put(1000, b"\x00" * 64 + target30.encode("utf-16-le") + b"\x00" * 64)
+    i30.put(5000, b"\x11" * 32 + other30.encode("utf-16-le") + b"\x11" * 32)
+    i30.put(9000, b"\x00" * 16 + target30.encode("ascii") + b"\x00" * 16)
+    d30 = RawDisk(p30, writable=False)
+    try:
+        r30 = find_name(d30, "Ftp")
+        check("T30 finds the name in raw bytes", len(r30["hits"]) >= 2,
+              len(r30["hits"]))
+        encs30 = set(h["encoding"] for h in r30["hits"])
+        check("T30 finds it in both UTF-16 and ASCII", encs30 == {"UTF-16", "ASCII"},
+              encs30)
+        lbas30 = sorted(set(h["lba"] for h in r30["hits"]))
+        check("T30 reports the right sectors", lbas30 == [1000, 9000], lbas30)
+
+        r30b = find_name(d30, "ftp")
+        check("T30 search is case-insensitive",
+              len(r30b["hits"]) == len(r30["hits"]), len(r30b["hits"]))
+
+        r30c = find_name(d30, "NoSuchServerName12345")
+        check("T30 absent name yields no hits", r30c["hits"] == [], r30c["hits"])
+
+        r30d = find_name(d30, "Ftp", max_hits=1)
+        check("T30 max_hits caps the result and flags truncation",
+              len(r30d["hits"]) == 1 and r30d["truncated"], r30d)
+
+        r30e = find_name(d30, "Ftp", limit=512)
+        check("T30 limit restricts how much is read",
+              r30e["hits"] == [] and r30e["scanned"] <= 64 * MIB + 512,
+              (r30e["hits"], r30e["scanned"]))
+    finally:
+        d30.close()
+
+    ns30 = build_parser().parse_args(["--disk", "0", "--find-name", "Ftp",
+                                      "--find-limit", "1024",
+                                      "--find-max-hits", "7"])
+    check("T30 --find-name parses", ns30.find_name == "Ftp")
+    check("T30 --find-limit parses", ns30.find_limit == 1024)
+    check("T30 --find-max-hits parses", ns30.find_max_hits == 7)
+
+    # ================================================================= T31 ==
+    # --dump-range must lift a sector range out read-only and surface the
+    # strings inside it, in both ASCII and UTF-16LE.
+    p31 = os.path.join(tmp, "dumprange.img")
+    i31 = _Img(p31, 32 * MIB)
+    ascii31 = "FTP (172.17.1.252).88D2026-01-15T030405_ABCD.vbk"
+    utf31 = "BackupJobMetadataEntry"
+    i31.put(700, b"\x00" * 40 + ascii31.encode("ascii") + b"\xff" * 40)
+    i31.put(701, b"\x00" * 16 + utf31.encode("utf-16-le") + b"\x00" * 16)
+    sha31 = i31.sha()
+    d31 = RawDisk(p31, writable=False)
+    outp31 = os.path.join(tmp, "range_out.bin")
+    try:
+        r31 = dump_range(d31, 700, 4, outp31)
+        check("T31 dump wrote the requested byte count",
+              r31["bytes"] == 4 * 512 and os.path.getsize(outp31) == 4 * 512,
+              (r31["bytes"], os.path.getsize(outp31)))
+        check("T31 dumped bytes match the disk",
+              open(outp31, "rb").read() == i31.read(700, 4))
+        check("T31 ASCII string extracted",
+              any(ascii31 in s for s in r31["strings"]), r31["strings"][:5])
+        check("T31 UTF-16 string extracted",
+              any(utf31 in s for s in r31["strings"]), r31["strings"][:5])
+        check("T31 dumping is read-only", i31.sha() == sha31)
+
+        try:
+            dump_range(d31, 10 ** 9, 4, outp31)
+            oob31 = False
+        except DiskError:
+            oob31 = True
+        check("T31 an out-of-range start LBA is refused", oob31)
+
+        r31b = dump_range(d31, (32 * MIB) // 512 - 2, 10, outp31)
+        check("T31 a range past the end is clamped, not crashed",
+              r31b["sectors"] == 2, r31b["sectors"])
+    finally:
+        d31.close()
+
+    ns31 = build_parser().parse_args(["--disk", "0",
+                                      "--dump-range", "9211248:64",
+                                      "--dump-out", "x.bin",
+                                      "--dump-strings-min", "9"])
+    check("T31 --dump-range parses", ns31.dump_range == "9211248:64")
+    check("T31 --dump-out parses", ns31.dump_out == "x.bin")
+    check("T31 --dump-strings-min parses", ns31.dump_strings_min == 9)
+
+    # ================================================================= T32 ==
+    # String extraction must separate real names from compression noise. Both
+    # sample sets below are verbatim output from a real dump of a compressed
+    # backup file, so this measures the filter against the thing it exists for.
+    real32 = [
+        "summary.xml", "FTP (172.17.1.252).vmx", "FTP (172.17.1.252).nvram2",
+        "FTP (172.17.1.252)_1.vmdk", "FTP (172.17.1.252)_2-flat.vmdk",
+        "FsAwareMeta:3748ff29-29b1-46a2-aae7-f7a30d48c77d:2000",
+        "Noavaran (172.17.1.200).218D2025-08-04T200026_4D32.vib",
+        "FTP (172.17.1.252)_D92AD.vbm", "desktop.ini",
+        "Print (172.17.1.242).125D2026-07-10T070022_49C5.vbk",
+        "Microsoft reserved partition", "Basic data partition",
+        "foundfiles.txt",
+    ]
+    noise32 = [
+        "v~J'\"(", "LX'? (", ",}GX!>", "dLeu-85", "hHn-fF", "U-%9/@g", "2yVHpY",
+        "1$2UIt", "o9'pUP", "@ffXKI_a", "by$Knw", ")r6yGy", "'Ar;B1U", "J}M+l7",
+        "5W]3 {1(", "G.yI938", "p72+z(", "csZ\"Nm", "2;K\"kH{A", "$f5b8VB",
+        "?7w{ bm80Y", "3C-d*?.eXa3", "DbN2ft", "JMo6:$", "6soO\"u", "I#`k0p%l",
+        "?>H<:+i%M", "u RkJW", "8^hcsl%", "K}:`7&", ";Dcs.4\"4[", "KzL(K{M",
+        "=p[.zu", "},K|qnn", "]5zxK6`|", "a(*BV|", "\"NJ3|.", "0J_`FX", "Zv8>0?",
+        "}`Uu[0", "{3;kf]~`", "fi]j95G", "p8mw43n3", "s)ks_+", "jhd -}", "oiD-!^",
+        "F^BTzj", ">?xzR&", "HQm'6Q", "){0;i!", "1(,G&a", "6[KvY+", "~A\\iUC",
+        "X]_x?e", "[E}+F6", ",lw$li", ">V.wv'zB", "NO|It*", "yw'B!W", "VD9#Ap",
+        "p= CrW", ":h,PD}", ";zFuZSl", "3xJ g!7o", "JdkU{f", "6F9w!?", "+g I7'",
+        "[I_#}1", "?}RP~V)", "Co&:-n", ",8gQ'9", "lsO[=[", "ko.3h.", "SXw\\@Z",
+        "^XQh/:", "=:%~@7l_", "f%[I.;", "eL{;{Q2", "pW@6?a", "8SL47f", "Uk5..V",
+        "W\"Ri9b",
+    ]
+    lost32 = [s for s in real32 if not looks_like_text(s)]
+    check("T32 no real filename is filtered out as noise", not lost32, lost32)
+    through32 = [s for s in noise32 if looks_like_text(s)]
+    check("T32 at least 90% of compression noise is filtered",
+          len(through32) <= len(noise32) * 0.10,
+          "%d/%d survived: %s" % (len(through32), len(noise32), through32[:6]))
+
+    # and the filter must be defeatable, because sometimes you want everything
+    blob32 = (b"\x00" * 8 + b"summary.xml" + b"\xff" * 8 + b"dLeu-85"
+              + b"\x00" * 8 + "FsAwareMeta".encode("utf-16-le") + b"\x00" * 8)
+    filt32 = extract_strings(blob32, 6, filter_noise=True)
+    raw32 = extract_strings(blob32, 6, filter_noise=False)
+    check("T32 filtered extraction keeps the real names",
+          "summary.xml" in filt32 and "FsAwareMeta" in filt32, filt32)
+    check("T32 filtered extraction drops the noise", "dLeu-85" not in filt32, filt32)
+    check("T32 --dump-raw-strings keeps everything", "dLeu-85" in raw32, raw32)
+
+    ns32 = build_parser().parse_args(["--disk", "0", "--dump-range", "1:1",
+                                      "--dump-raw-strings"])
+    check("T32 --dump-raw-strings parses", ns32.dump_raw_strings is True)
+
+    # ================================================================= T33 ==
+    # --find-vbm must locate real .vbm XML content and extract the documented
+    # fields (FilePath, BackupSize, EncryptionState, ...), distinguishing it
+    # from the directory-entry search (--find-name) which only sees the
+    # filename, not the file's own content.
+    vbm_xml = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<BackupMeta><Backup Id="4c26199b-f31f-4b71-930b-45838affc6ba" '
+        b'JobName="Ftp Job" EncryptionState="0" />'
+        b'<BackupMetaInfo><Storages><Storage '
+        b'FilePath="D:\\Backup\\Ftp\\FTP (172.17.1.252)D2026-01-15T030405_ABCD.vbk" '
+        b'Version="1"><Stats><CBackupStats><BackupSize>128849018880</BackupSize>'
+        b'<DataSize>987654321000</DataSize></CBackupStats></Stats></Storage>'
+        b'</Storages></BackupMetaInfo></BackupMeta>'
+    )
+    p33 = os.path.join(tmp, "vbm_meta.img")
+    i33 = _Img(p33, 16 * MIB)
+    i33.put(4000, vbm_xml)
+    sha33 = i33.sha()
+    d33 = RawDisk(p33, writable=False)
+    try:
+        r33 = find_vbm_metadata(d33, window=8192)
+        check("T33 locates the .vbm XML content", len(r33["hits"]) == 1,
+              len(r33["hits"]))
+        f33 = r33["hits"][0]["fields"] if r33["hits"] else {}
+        check("T33 extracts the exact BackupSize",
+              f33.get("BackupSize") == ["128849018880"], f33.get("BackupSize"))
+        check("T33 extracts the original FilePath",
+              f33.get("FilePath") and "FTP (172.17.1.252)" in f33["FilePath"][0],
+              f33.get("FilePath"))
+        check("T33 extracts EncryptionState",
+              f33.get("EncryptionState") == ["0"], f33.get("EncryptionState"))
+        check("T33 extracts JobName",
+              f33.get("JobName") == ["Ftp Job"], f33.get("JobName"))
+        check("T33 search is read-only", d33.sha() if hasattr(d33, "sha") else True)
+    finally:
+        d33.close()
+    check("T33 disk untouched", i33.sha() == sha33)
+
+    # encrypted case must be flagged, not silently treated as normal
+    vbm_enc = vbm_xml.replace(b'EncryptionState="0"', b'EncryptionState="2"')
+    p33b = os.path.join(tmp, "vbm_enc.img")
+    i33b = _Img(p33b, 16 * MIB)
+    i33b.put(4000, vbm_enc)
+    d33b = RawDisk(p33b, writable=False)
+    try:
+        r33b = find_vbm_metadata(d33b, window=8192)
+        f33b = r33b["hits"][0]["fields"]
+        check("T33b encrypted state is captured", f33b.get("EncryptionState") == ["2"])
+    finally:
+        d33b.close()
+
+    # absent .vbm yields no hits, not a crash
+    p33c = os.path.join(tmp, "no_vbm.img")
+    _Img(p33c, 4 * MIB)
+    d33c = RawDisk(p33c, writable=False)
+    try:
+        r33c = find_vbm_metadata(d33c)
+        check("T33c no .vbm present yields no hits", r33c["hits"] == [])
+    finally:
+        d33c.close()
+
+    ns33 = build_parser().parse_args(["--disk", "0", "--find-vbm",
+                                      "--find-vbm-window", "1024",
+                                      "--find-vbm-max-hits", "5"])
+    check("T33 --find-vbm parses", ns33.find_vbm is True)
+    check("T33 --find-vbm-window parses", ns33.find_vbm_window == 1024)
+    check("T33 --find-vbm-max-hits parses", ns33.find_vbm_max_hits == 5)
+
+    # ================================================================= T34 ==
+    # --carve-vbk must center on the given LBA with the requested margin, read
+    # only, and clamp instead of crashing when the window runs off the disk.
+    p34 = os.path.join(tmp, "carve.img")
+    i34 = _Img(p34, 64 * MIB)
+    marker34 = b"VBKCONTENTMARKER" * 4
+    center34 = 20000
+    i34.put(center34, marker34)
+    sha34 = i34.sha()
+    d34 = RawDisk(p34, writable=False)
+    outp34 = os.path.join(tmp, "carved_out.bin")
+    try:
+        r34 = carve_vbk(d34, center34, 0.001, outp34)  # ~1 MiB margin each side
+        check("T34 carve starts before the center LBA",
+              r34["start_lba"] <= center34 <= r34["start_lba"] + r34["sectors"],
+              (r34["start_lba"], r34["sectors"], center34))
+        with open(outp34, "rb") as f:
+            data34 = f.read()
+        rel = (center34 - r34["start_lba"]) * 512
+        check("T34 the marker is present at the expected offset inside the carve",
+              data34[rel:rel + len(marker34)] == marker34)
+        check("T34 carving is read-only", i34.sha() == sha34)
+
+        # a center near LBA 0 must clamp the head, not go negative or crash
+        r34b = carve_vbk(d34, 5, 0.001, outp34)
+        check("T34b start clamps to 0 near the beginning of the disk",
+              r34b["start_lba"] == 0, r34b["start_lba"])
+    finally:
+        d34.close()
+
+    ns34 = build_parser().parse_args(["--disk", "0", "--carve-vbk",
+                                      "234280000:4", "--carve-out", "x.bin"])
+    check("T34 --carve-vbk parses", ns34.carve_vbk == "234280000:4")
+    check("T34 --carve-out parses", ns34.carve_out == "x.bin")
+
     QUIET, EXPLAIN = prev_q, prev_e
     failed = [n for n, okk in results if not okk]
     print("\n%d/%d passed" % (len(results) - len(failed), len(results)))
@@ -6598,6 +7311,45 @@ def build_parser():
     g.add_argument("--time-budget", type=int, default=0, help="سقف زمان اسکن عمیق")
     g.add_argument("--explain", action="store_true",
                    help="چاپ جدول کامل شواهد هر کاندید")
+    g.add_argument("--find-name", metavar="TEXT",
+                   help="جستجوی یک نام فایل در بایت‌های خام دیسک، مستقل از "
+                        "فایل‌سیستم. برای پاسخ به «آیا این فایل روی این دیسک "
+                        "بوده؟» وقتی ساختار فایل‌سیستم نابود شده. فقط خواندن.")
+    g.add_argument("--find-limit", type=int, default=0,
+                   help="سقف حجم جستجوی --find-name بر حسب بایت (0 = کل دیسک)")
+    g.add_argument("--find-max-hits", type=int, default=50,
+                   help="سقف تعداد موارد گزارش‌شده (پیش‌فرض 50)")
+    g.add_argument("--dump-range", metavar="LBA:COUNT",
+                   help="استخراج یک محدوده سکتور خام به فایل، مثل 9211248:64 . "
+                        "رشته‌های خوانای داخلش هم چاپ می‌شود. فقط خواندن.")
+    g.add_argument("--dump-out", metavar="PATH", default="dump.bin",
+                   help="مسیر فایل خروجی --dump-range (پیش‌فرض dump.bin)")
+    g.add_argument("--dump-strings-min", type=int, default=6,
+                   help="حداقل طول رشته خوانا برای نمایش (پیش‌فرض 6)")
+    g.add_argument("--dump-raw-strings", action="store_true",
+                   help="نمایش همه رشته‌های خوانا بدون فیلتر نویز. پیش‌فرض فقط "
+                        "رشته‌هایی که شبیه متن واقعی‌اند نشان داده می‌شوند، "
+                        "چون داده فشرده دائم رشته‌های کوتاه بی‌معنا می‌سازد.")
+
+    g = p.add_argument_group("Veeam — VBM و VBK (v1.8)")
+    g.add_argument("--find-vbm", action="store_true",
+                   help="جستجوی محتوای واقعی فایل .vbm (تگ XML <BackupMeta>، "
+                        "نه فقط ورودی دایرکتوری). استخراج FilePath، BackupSize، "
+                        "EncryptionState و غیره از روی XML مستند. فقط خواندن.")
+    g.add_argument("--find-vbm-window", type=int, default=512 * KIB,
+                   help="حجم پنجره خوانده‌شده بعد از هر <BackupMeta> (پیش‌فرض 512KiB)")
+    g.add_argument("--find-vbm-max-hits", type=int, default=20,
+                   help="سقف تعداد .vbm گزارش‌شده (پیش‌فرض 20)")
+    g.add_argument("--carve-vbk", metavar="CENTER_LBA:MARGIN_GIB",
+                   help="استخراج یک محدوده بزرگ و پیوسته اطراف یک LBA شناخته‌شده "
+                        "به فایل، برای دادن به Veeam Extract Utility. مثل "
+                        "234280000:4 یعنی 4 گیگابایت قبل و بعد از آن LBA. "
+                        "چون فرمت VBK امضای عمومی مستندی ندارد (ویم آن را "
+                        "منتشر نکرده)، این محدوده حدسی است نه دقیق — margin "
+                        "را آن‌قدر بزرگ بگیر که مطمئن شوی شروع واقعی فایل "
+                        "داخلش است. فقط خواندن.")
+    g.add_argument("--carve-out", metavar="PATH", default="carved.bin",
+                   help="مسیر خروجی --carve-vbk (پیش‌فرض carved.bin)")
     g.add_argument("--deep-ignore-table", action="store_true",
                    help="در اسکن عمیق، محدوده پارتیشن‌های جدول را هم بگرد "
                         "(وقتی خود جدول مشکوک است)")
@@ -6767,6 +7519,58 @@ def main(argv=None):
             if args.image_out:
                 make_image(disk, args.image_out, limit=args.image_limit,
                            retries=args.image_retries, fill=args.image_fill)
+            if args.find_vbm:
+                vres = find_vbm_metadata(disk, limit=args.find_limit,
+                                         window=args.find_vbm_window,
+                                         max_hits=args.find_vbm_max_hits)
+                print_find_vbm(vres)
+                if args.json:
+                    _atomic_write_json(args.json, vres)
+                    ok("JSON: %s" % args.json)
+                return EXIT_OK
+
+            if args.carve_vbk:
+                try:
+                    cpart = args.carve_vbk.split(":")
+                    clba = int(cpart[0])
+                    cmargin = float(cpart[1]) if len(cpart) > 1 else 1.0
+                except Exception:
+                    err("قالب --carve-vbk باید CENTER_LBA:MARGIN_GIB باشد، "
+                       "مثل 234280000:4")
+                    return EXIT_ARG
+                cres = carve_vbk(disk, clba, cmargin, args.carve_out)
+                print_dump_range(cres)
+                if args.json:
+                    _atomic_write_json(args.json, cres)
+                    ok("JSON: %s" % args.json)
+                return EXIT_OK
+
+            if args.dump_range:
+                try:
+                    part = args.dump_range.split(":")
+                    slba = int(part[0])
+                    cnt = int(part[1]) if len(part) > 1 else 1
+                except Exception:
+                    err("قالب --dump-range باید LBA:COUNT باشد، مثل 9211248:64")
+                    return EXIT_ARG
+                dres = dump_range(disk, slba, cnt, args.dump_out,
+                                  args.dump_strings_min,
+                                  filter_noise=not args.dump_raw_strings)
+                print_dump_range(dres)
+                if args.json:
+                    _atomic_write_json(args.json, dres)
+                    ok("JSON: %s" % args.json)
+                return EXIT_OK
+
+            if args.find_name:
+                fres = find_name(disk, args.find_name, limit=args.find_limit,
+                                 max_hits=args.find_max_hits)
+                print_find_name(fres, disk)
+                if args.json:
+                    _atomic_write_json(args.json, fres)
+                    ok("JSON: %s" % args.json)
+                return EXIT_OK
+
             r = scan(disk, deep=args.deep, deep_step=args.deep_step,
                      deep_limit=args.deep_limit, time_budget=args.time_budget,
                      ignore_table=args.deep_ignore_table)

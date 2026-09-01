@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.8
+- `--find-vbm`: search for the actual content of a .vbm file (the documented
+  `<BackupMeta>` XML root tag), not just its directory entry. Veeam has
+  publicly declined to document the VBK/VIB storage format, but the .vbm
+  metadata format is documented by third-party research (Synacktiv, 2024).
+  Extracts FilePath, exact BackupSize, EncryptionState, JobName and more.
+- `--carve-vbk CENTER_LBA:MARGIN_GIB`: convenience wrapper over --dump-range
+  that extracts a large contiguous window around a known-good content offset,
+  for handing to Veeam Extract Utility. No VBK start signature is claimed or
+  guessed — the margin has to be generous enough to contain the true start.
+
+## 1.7.1
+- Noise filter for extracted strings. Compressed and encrypted data constantly
+  produces short printable runs, which buried real filenames in junk. A run now
+  qualifies only if it contains a genuine word (a CamelCase token of 4+ letters)
+  or ends in a lowercase file extension. Measured on real dump output: 13/13
+  real names kept, 82/84 noise strings dropped. `--dump-raw-strings` disables it.
+
+## 1.7
+- `--dump-range LBA:COUNT`: lift a raw sector range out to a file and print the
+  printable strings inside it (ASCII and UTF-16LE). For pulling a small
+  structure — a `.vbm`, a boot sector, a metadata node — off a volume whose
+  filesystem can no longer locate it. Read-only.
+
+## 1.6
+- `--find-name`: search the raw disk for a filename independently of any
+  filesystem. Names are stored as UTF-16LE in NTFS/ReFS/exFAT metadata, so a
+  name can still be found byte-for-byte after the structures that locate the
+  file are destroyed. Answers "was this file ever on this volume" when nothing
+  else can. Read-only.
+
 ## 1.5.1
 - Fix: `--triage-head-gib`, `--triage-head-samples` and `--baseline` were
   documented and read by the code but never registered with argparse, so any
