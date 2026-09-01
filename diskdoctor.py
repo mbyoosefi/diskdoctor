@@ -436,10 +436,27 @@ EXPLAIN = False
 LOGFILE = None
 REPORTFILE = None
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+_ANSI_SPLIT_RE = re.compile(r"(\033\[[0-9;]*m)")
+_LTR_RUN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/,\-()%\[\]×x+]*")
 
 
 def _strip_ansi(s):
     return _ANSI_RE.sub("", str(s))
+
+
+def _bidi_wrap(s):
+    """Pin embedded LTR runs (numbers, LBA ranges, ReFS/NTFS/... names) with
+    LRM marks so Windows console bidi reordering doesn't scramble them when
+    mixed into a right-to-left Persian sentence. Only applied to what's
+    printed to the terminal — report/log files keep the plain string."""
+    if LANG != "fa":
+        return s
+    parts = _ANSI_SPLIT_RE.split(s)
+    return "".join(
+        part if _ANSI_SPLIT_RE.fullmatch(part or "")
+        else _LTR_RUN_RE.sub(lambda m: "‎" + m.group(0) + "‎", part)
+        for part in parts
+    )
 
 
 def _log(s):
@@ -459,7 +476,7 @@ def _log(s):
 
 def out(s=""):
     if not QUIET:
-        print(s)
+        print(_bidi_wrap(s))
     _log(s)
 
 
@@ -476,7 +493,7 @@ def warn(s):
 
 
 def err(s):
-    print(C.w(C.RED, "[x] ") + s, file=sys.stderr)
+    print(_bidi_wrap(C.w(C.RED, "[x] ") + s), file=sys.stderr)
     _log("[x] " + s)
 
 
@@ -2588,8 +2605,9 @@ def deep_scan(disk, step=MIB, limit=0, time_budget=0, known=(), chunk=8 * MIB):
                 hits += 1
         pos += n
         if not QUIET and end > 64 * MIB:
-            sys.stdout.write("\r    deep scan %5.1f%%  (%s / %s)  ولوم خارج از جدول=%d   " %
-                             (100.0 * pos / end, human(pos), human(end), hits))
+            sys.stdout.write(_bidi_wrap(
+                "\r    deep scan %5.1f%%  (%s / %s)  ولوم خارج از جدول=%d   " %
+                (100.0 * pos / end, human(pos), human(end), hits)))
             sys.stdout.flush()
     if not QUIET and end > 64 * MIB:
         sys.stdout.write("\r" + " " * 70 + "\r")
