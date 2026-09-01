@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.1
+- Fix: `--triage-head-gib`, `--triage-head-samples` and `--baseline` were
+  documented and read by the code but never registered with argparse, so any
+  real `--triage` run crashed with AttributeError. Every test had built its
+  Namespace with `_fake_args()` rather than the real parser, so the gap was
+  invisible. A test now diffs every `args.*` the code reads against
+  `build_parser()` output.
+
 ## 1.5
 - `refsutil` has a ReFS-version ceiling tied to the Windows build it shipped
   with. When a volume's ReFS version exceeds it, `refsutil` fails with a

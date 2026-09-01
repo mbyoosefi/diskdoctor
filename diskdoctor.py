@@ -2,10 +2,19 @@
 # -*- coding: utf-8 -*-
 r"""
 ================================================================================
-DiskDoctor v1.5  —  Forensic scanner + evidence-based repair engine
+DiskDoctor v1.5.1  —  Forensic scanner + evidence-based repair engine
 اسکن فارنزیک و ترمیم مبتنی بر شواهد برای دیسک‌هایی که پس از اصلاح VMDK
 در ویندوز Attach/Assign شده‌اند.
 ================================================================================
+
+تازه در v1.5.1
+--------------
+* رفع باگ: سه سوییچ --triage-head-gib، --triage-head-samples و --baseline در
+  متن راهنما مستند شده و در کد استفاده می‌شدند ولی هیچ‌وقت به argparse معرفی
+  نشده بودند. نتیجه‌اش کرش با AttributeError وسط triage بود. علت پنهان ماندنش:
+  همه تست‌ها Namespace خودشان را با _fake_args می‌ساختند و هیچ‌وقت parser واقعی
+  را صدا نمی‌زدند. حالا یک تست، تمام args.*هایی که کد می‌خواند را با خروجی
+  build_parser() مقایسه می‌کند تا این نوع اختلاف دوباره از قلم نیفتد.
 
 تازه در v1.5
 ------------
@@ -317,7 +326,7 @@ import tempfile
 import time
 import uuid
 
-VERSION = "1.5"
+VERSION = "1.5.1"
 IS_WIN = (os.name == "nt")
 IS_LINUX = sys.platform.startswith("linux")
 
@@ -6294,6 +6303,40 @@ def self_test():
           any("سقف نسخه" in w for w in r28.warnings), r28.warnings)
     d.close()
 
+    # ================================================================= T29 ==
+    # The real CLI parser must define every attribute the code reads off args.
+    # Until now every test built its Namespace with _fake_args(), so three
+    # switches that were documented and used but never registered with
+    # argparse went unnoticed until a real run crashed with AttributeError.
+    parser29 = build_parser()
+    ns29 = parser29.parse_args([])
+    src29 = open(os.path.abspath(__file__), encoding="utf-8").read() \
+        if os.path.exists(os.path.abspath(__file__)) else ""
+    used29 = set(re.findall(r"\bargs\.([a-z_][a-z0-9_]*)", src29))
+    used29 |= set(re.findall(r'getattr\(args,\s*"([a-z_][a-z0-9_]*)"', src29))
+    used29 -= {"append", "_control"}          # not argparse attributes
+    have29 = set(vars(ns29))
+    missing29 = sorted(used29 - have29)
+    check("T29 every args.* the code reads is defined by the real parser",
+          not missing29, "missing from build_parser(): %s" % missing29)
+
+    fake29 = set(vars(_fake_args()))
+    drift29 = sorted(fake29 - have29)
+    check("T29 _fake_args does not drift ahead of the real parser",
+          not drift29, "in _fake_args but not in build_parser(): %s" % drift29)
+
+    # the triage switches specifically must parse and carry sane defaults
+    ns29b = parser29.parse_args(["--disk", "0", "--triage",
+                                 "--triage-head-gib", "4",
+                                 "--triage-head-samples", "32",
+                                 "--baseline", "6:32768"])
+    check("T29 --triage-head-gib parses", ns29b.triage_head_gib == 4)
+    check("T29 --triage-head-samples parses", ns29b.triage_head_samples == 32)
+    check("T29 --baseline parses", ns29b.baseline == "6:32768")
+    check("T29 triage head defaults are sane",
+          ns29.triage_head_gib == 8 and ns29.triage_head_samples == 128,
+          (ns29.triage_head_gib, ns29.triage_head_samples))
+
     QUIET, EXPLAIN = prev_q, prev_e
     failed = [n for n, okk in results if not okk]
     print("\n%d/%d passed" % (len(results) - len(failed), len(results)))
@@ -6556,6 +6599,13 @@ def build_parser():
                    help="چقدر از انتهای پارتیشن گشته شود (پیش‌فرض 512 مگابایت)")
     g.add_argument("--triage-edge-gib", type=int, default=16,
                    help="سقف پویش ترتیبی برای یافتن اولین ساختار (گیگابایت)")
+    g.add_argument("--triage-head-gib", type=int, default=8,
+                   help="حجم نقشه متراکم ابتدای ولوم (پیش‌فرض 8 گیگابایت)")
+    g.add_argument("--triage-head-samples", type=int, default=128,
+                   help="تعداد نمونه نقشه متراکم ابتدا (پیش‌فرض 128)")
+    g.add_argument("--baseline", metavar="DISK:LBA",
+                   help="ولوم سالمِ کنترل به‌صورت دستی، مثل  6:32768 . در حالت "
+                        "auto خودکار انتخاب می‌شود.")
 
     g = p.add_argument_group("ترمیم")
     g.add_argument("--plan", action="store_true", help="فقط طرح‌ها و کلاس مجوزشان")
