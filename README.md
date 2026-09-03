@@ -3,7 +3,7 @@
 > **اسکن و ترمیم ایمن دیسک، بر پایهٔ شواهد — در یک فایل پایتون و بدون وابستگی خارجی.**
 > **Evidence-based disk scanning and safe repair — one dependency-free Python file.**
 
-[English](#english) · [فارسی](#فارسی) · [مستندات کامل / Full documentation](DOCS.md)
+[English](#english) · [فارسی](#فارسی) · [مستندات کامل / Full documentation](DOCS.md) · [Changelog](CHANGELOG.md)
 
 ---
 
@@ -17,6 +17,8 @@ DiskDoctor برای بررسی دیسک‌های مشکوک طراحی شده ا
 
 - `SAFE_RESTORE` — بازگردانی یک ساختار معتبر که از قبل روی همان دیسک وجود دارد.
 - `INFERRED_REBUILD` — بازسازی بر اساس شواهد؛ فقط با تأیید صریح کاربر انجام می‌شود.
+
+اگر ترمیم ساختاری ممکن نباشد — مثلاً وقتی متادیتای فایل‌سیستم واقعاً از بین رفته — DiskDoctor ابزارهای فارنزیک فقط‌خواندنی هم دارد: تشخیص عمق خرابی، جستجوی نام فایل و متادیتای Veeam در بایت‌های خام دیسک، و استخراج محدوده‌های مشخص برای بازیابی دستی.
 
 ### ویژگی‌ها
 
@@ -39,7 +41,7 @@ python diskdoctor.py --auto --all # اسکن فقط‌خواندنی و تولی
 python diskdoctor.py --help-full
 ```
 
-جزئیات معماری، سازوکار محافظت از نوشتن، گردش‌کار پیشنهادی و نکات ایمنی در [مستندات کامل](DOCS.md) آمده است.
+جزئیات معماری، سازوکار محافظت از نوشتن، ابزارهای فارنزیک، گردش‌کار پیشنهادی و نکات ایمنی در [مستندات کامل](DOCS.md) آمده است.
 
 ### سلب مسئولیت
 
@@ -57,6 +59,8 @@ Its core rule is simple: **nothing is written without sufficient evidence.**
 
 - `SAFE_RESTORE` — restores a valid structure that already exists on the same disk.
 - `INFERRED_REBUILD` — reconstructs a structure from evidence and requires explicit user confirmation.
+
+When structural repair isn't possible — for example when a filesystem's own metadata is genuinely gone — DiskDoctor also has read-only forensic tools: damage-depth triage, raw byte-level search for filenames and Veeam metadata, and range extraction for manual recovery.
 
 ### Highlights
 
@@ -79,7 +83,7 @@ For the complete command reference:
 python diskdoctor.py --help-full
 ```
 
-See the [full documentation](DOCS.md) for the architecture, write gate, recommended workflow, and safety guidance.
+See the [full documentation](DOCS.md) for the architecture, write gate, forensic tools, recommended workflow, and safety guidance.
 
 ### Disclaimer
 

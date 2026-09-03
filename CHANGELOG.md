@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.9.5
+- `--find-name-file PATH`: read the --find-name search text from a file, the
+  same protection --locate-verify-file already had. The identical shell
+  quoting / BOM pitfalls could hit --find-name just as easily. T40 covers it.
+
+## 1.9.4
+- Fix: `--locate-verify-file` did not strip a leading UTF-8 BOM.
+  PowerShell's `Out-File -Encoding utf8` always prepends an invisible BOM, so
+  the needle silently began with an invisible character and matched nothing
+  on disk -- the mechanism worked perfectly, but every candidate looked
+  unverified. Now reads with `utf-8-sig`, which strips a BOM when present.
+
+## 1.9.3
+- `--locate-verify-file PATH`: read the --locate-verify search text from a
+  file instead of the command line. A needle containing an embedded double
+  quote (e.g. the VMDK descriptor pattern `VMFS "..."`) could be mis-escaped
+  by PowerShell when passed inline, silently swallowing every flag after it
+  (including --locate-verify-top-n) into the same argument -- exactly what
+  happened in the field. Reading from a file sidesteps shell quoting
+  entirely.
+
+## 1.9.2
+- Fix: `--locate-verify-top-n` was silently ignored. The underlying scorer
+  always truncated its result list to the top 20 candidates *before* content
+  verification ever saw them, so any value passed to `--locate-verify-top-n`
+  (even in the thousands) only ever actually checked the first 20. On a dense
+  repository the true candidate is often not in the top 20 by entropy score
+  alone, so this bug could mean the real file was never tested. Fixed and
+  pinned with regression test T37.
+
+## 1.9.1
+- `--locate-verify TEXT` (alongside `--locate-vbk`): on a dense repository,
+  several neighbouring files can score identically on entropy/alignment --
+  they are all compressed data with similarly-shaped boundaries. Entropy
+  scoring alone can rank the wrong neighbour first, which is exactly what
+  happened in the field (five ranked candidates, none the right file).
+  This reads a real content probe (a few MB) from each top-scoring candidate
+  and checks whether the given text (e.g. a VM name) actually appears near
+  its start -- the pattern every genuine successful carve in this project
+  has shown. T36 reproduces the exact failure (three same-size neighbours,
+  target in the middle) and proves verification picks the true one.
+
+## 1.9
+- `--locate-vbk CENTER_LBA:SIZE_BYTES`: find the precise start of a
+  known-exact-size file using Veeam block alignment (BlockAlignmentSize from
+  the .vbm, typically 65536 bytes) instead of a linear margin guess. Carving
+  tens or hundreds of GiB on a guessed offset is expensive, and being even a
+  few bytes off produces a "Storage version not supported" error from Veeam
+  even when the server version matches exactly. Scores thousands of
+  alignment-snapped candidates using a few KB of reads each, ranking by
+  whether content differs on both sides of the boundary. Read-only.
+
 ## 1.8
 - `--find-vbm`: search for the actual content of a .vbm file (the documented
   `<BackupMeta>` XML root tag), not just its directory entry. Veeam has

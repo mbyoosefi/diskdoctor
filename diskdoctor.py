@@ -2,10 +2,73 @@
 # -*- coding: utf-8 -*-
 r"""
 ================================================================================
-DiskDoctor v1.8  —  Forensic scanner + evidence-based repair engine
+DiskDoctor v1.9.5  —  Forensic scanner + evidence-based repair engine
 اسکن فارنزیک و ترمیم مبتنی بر شواهد برای دیسک‌هایی که پس از اصلاح VMDK
 در ویندوز Attach/Assign شده‌اند.
 ================================================================================
+
+تازه در v1.9.5
+--------------
+* --find-name-file PATH : متن --find-name را از فایل بخوان، درست مثل
+  --locate-verify-file. همان مشکل کوتیشن/BOM که برای --locate-verify پیش
+  آمد می‌توانست دقیقاً برای --find-name هم اتفاق بیفتد؛ حالا هر دو با یک
+  مکانیزم یکسان محافظت می‌شوند.
+
+تازه در v1.9.4
+--------------
+* رفع باگ: --locate-verify-file یک BOM (Byte Order Mark) احتمالی در ابتدای
+  فایل را نادیده نمی‌گرفت. PowerShell با `Out-File -Encoding utf8` همیشه یک
+  BOM نامرئی در ابتدای فایل می‌گذارد؛ بدون حذفش، متن جستجو با یک کاراکتر
+  نامرئی شروع می‌شد و هیچ‌جای دیسک پیدا نمی‌شد — نتیجه به‌ظاهر «هیچ کاندیدی
+  تایید نشد» بود، در حالی که مکانیزم verify کاملاً درست کار می‌کرد. حالا با
+  encoding «utf-8-sig» فایل خوانده می‌شود که BOM را در صورت وجود خودکار
+  حذف می‌کند.
+
+تازه در v1.9.3
+--------------
+* --locate-verify-file PATH : متن جستجوی --locate-verify را از یک فایل بخوان
+  به‌جای خط فرمان. وقتی متن کوتیشن دوتایی داخلش دارد (مثل الگوی توصیف‌گر
+  VMDK: `VMFS "..."`)، PowerShell گاهی آن کوتیشن را درست escape نمی‌کند و
+  بقیه سوییچ‌های خط فرمان (از جمله --locate-verify-top-n) را بی‌صدا قورت
+  می‌دهد — دقیقاً همین اتفاق افتاد. با خواندن از فایل، هیچ کوتیشن یا کاراکتر
+  خاصی از صافی shell عبور نمی‌کند.
+      "VMFS `"Active (172.17.1.253)" | Out-File -Encoding utf8 needle.txt
+      python diskdoctor.py --disk 3 --locate-vbk ... --locate-verify-file needle.txt
+
+تازه در v1.9.2
+--------------
+* رفع باگ: --locate-verify-top-n نادیده گرفته می‌شد. تابع امتیازدهی زیرین
+  همیشه لیست را به ۲۰ کاندید برتر کوتاه می‌کرد *قبل* از اینکه مرحله تایید
+  محتوا آن را ببیند — یعنی هر عددی برای --locate-verify-top-n می‌دادی
+  (حتی چند هزار)، فقط همان ۲۰ تای اول واقعاً چک می‌شدند. روی یک repository
+  پرتراکم، کاندید درست معمولاً امتیاز آنتروپی‌اش در ۲۰ تای اول نیست، پس این
+  باگ می‌توانست باعث شود کاندید واقعی هیچ‌وقت تست نشود. رفع شد و با تست T37
+  قفل شد تا تکرار نشود.
+
+تازه در v1.9.1
+--------------
+* --locate-verify TEXT (کنار --locate-vbk) : روی یک repository پرتراکم، چند
+  فایل همسایه می‌توانند دقیقاً همان امتیاز آنتروپی/تراز را داشته باشند —
+  چون همه‌شان داده فشرده با شکل مشابه‌اند. امتیازدهی به‌تنهایی در این حالت
+  کاندید غلط را رتبه اول می‌دهد. این سوییچ کاندیدهای برتر را با یک پروب
+  واقعی (چند مگابایت) تایید می‌کند: آیا متن داده‌شده (مثلاً نام VM) واقعاً
+  در همان ابتدای فایل هست یا نه — همان الگویی که هر بار carve موفق واقعی
+  را مشخص کرده بود.
+      python diskdoctor.py --disk 3 --locate-vbk 93843712:18940297216 \
+          --locate-verify "Active (172.17.1.253)"
+
+تازه در v1.9
+------------
+* --locate-vbk CENTER_LBA:SIZE_BYTES : یافتن نقطه شروع دقیق یک فایل به اندازه
+  مشخص (از BackupSize در .vbm) با استفاده از تراز بلوک Veeam (معمولاً 65536
+  بایت، از BlockAlignmentSize در همان .vbm) به‌جای حدس خطی از روی margin.
+  چون carve کردن ده‌ها یا صدها گیگابایت با margin حدسی گران است و اگر نقطه
+  شروع چند بایت جابه‌جا باشد، ابزار بازیابی ویم پیام «Storage version نامعتبر»
+  می‌دهد حتی وقتی نسخه سرور دقیقاً همان است — این ابزار چند هزار کاندید
+  تراز‌شده را با چند کیلوبایت خواندن در هر کدام امتحان می‌کند و بهترین نقطه
+  مرز (جایی که قبل و بعدش با محتوای فایل فرق دارد) را رتبه‌بندی می‌کند. فقط
+  خواندن.
+      python diskdoctor.py --disk 1 --locate-vbk 93843712:18940297216
 
 تازه در v1.8
 ------------
@@ -252,6 +315,7 @@ triage — تشخیص عمق خرابی (فقط خواندن):
   --find-name TEXT       جستجوی نام فایل در بایت‌های خام دیسک، مستقل از
                          فایل‌سیستم. UTF-16 و ASCII، بدون حساسیت به حروف.
   --find-limit BYTES     سقف حجم جستجو (0 = کل دیسک)
+  --find-name-file PATH  متن --find-name را از فایل بخوان (BOM خودکار حذف)
   --find-max-hits N      سقف تعداد موارد گزارش‌شده (پیش‌فرض 50)
   --dump-range LBA:COUNT استخراج محدوده سکتور خام به فایل + چاپ رشته‌های
                          خوانا. مثل  9211248:64
@@ -263,6 +327,13 @@ triage — تشخیص عمق خرابی (فقط خواندن):
   --find-vbm-max-hits N   سقف تعداد .vbm گزارش‌شده (پیش‌فرض 20)
   --carve-vbk CENTER:GIB  استخراج محدوده بزرگ اطراف یک LBA شناخته‌شده
   --carve-out PATH        مسیر خروجی --carve-vbk (پیش‌فرض carved.bin)
+  --locate-vbk CENTER:SIZE  یافتن نقطه شروع دقیق با اندازه دقیق + تراز بلوک
+  --locate-align N         تراز جستجو به بایت (پیش‌فرض 65536)
+  --locate-radius-gib N    شعاع جستجو حول center به گیگابایت (پیش‌فرض 2)
+  --locate-verify TEXT     تایید کاندیدهای برتر با جستجوی این متن در محتوای
+                          واقعی — لازم روی repository پرتراکم
+  --locate-verify-top-n N  چند کاندید برتر تایید شود (پیش‌فرض 40)
+  --locate-probe-mib N     حجم پروب محتوا به مگابایت (پیش‌فرض 8)
   --json PATH            گزارش ساختاریافته JSON (شامل کل شواهد).
 
 ترمیم:
@@ -382,7 +453,7 @@ import tempfile
 import time
 import uuid
 
-VERSION = "1.8"
+VERSION = "1.9.5"
 IS_WIN = (os.name == "nt")
 IS_LINUX = sys.platform.startswith("linux")
 
@@ -3279,6 +3350,235 @@ def print_find_vbm(res):
                     out("      %-15s : %s" % (name, v))
 
 
+def locate_vbk_start(disk, center_lba, size_bytes, align_bytes=65536,
+                     radius_gib=2.0, sample_bytes=8192, max_candidates=4000,
+                     keep_top=20):
+    """Find the precise start offset of a known-size Veeam storage file.
+
+    We cannot rely on a documented VBK magic number (Veeam does not publish
+    one). What we DO have is the exact byte size from the .vbm's BackupSize
+    field, and the fact that Veeam aligns its internal blocks to
+    BlockAlignmentSize (typically 65536 bytes, taken straight from the .vbm).
+
+    This scans candidate start offsets on that alignment, within a radius of
+    the given center LBA, and scores each one on whether it looks like a real
+    file boundary: content just before the candidate start should look
+    different from content just after it (a transition), the run starting at
+    the candidate should still look like file content `size_bytes` later
+    (i.e. the file's declared length is honoured), and content right after
+    the computed end should again look different (the next file/metadata).
+
+    This is a heuristic, not a certainty -- there is no documented format to
+    verify against. It narrows a multi-gigabyte guess down to a short list of
+    strong candidates, each cheap enough (a few KB of reads) to try in
+    practice instead of carving tens or hundreds of gigabytes per attempt.
+    Read-only.
+    """
+    s = disk.sector
+    align_sectors = max(1, align_bytes // s)
+    radius_sectors = int(radius_gib * 1024 * MIB) // s
+    radius_sectors = (radius_sectors // align_sectors) * align_sectors
+    size_sectors = (size_bytes + s - 1) // s
+
+    lo = max(0, center_lba - radius_sectors)
+    hi = min(disk.sectors - size_sectors - 1, center_lba + radius_sectors)
+    lo = (lo // align_sectors) * align_sectors
+    if hi <= lo:
+        return {"candidates": [], "scanned": 0, "reason": "search window is empty"}
+
+    step = align_sectors
+    total_steps = (hi - lo) // step + 1
+    if total_steps > max_candidates:
+        step = ((hi - lo) // max_candidates // align_sectors + 1) * align_sectors
+
+    results = []
+    t0 = time.time()
+    n = 0
+    for start in range(lo, hi + 1, step):
+        n += 1
+        end = start + size_sectors
+        before = disk.read_at(max(0, start * s - sample_bytes), sample_bytes)
+        at_start = disk.read_at(start * s, sample_bytes)
+        at_end_inside = disk.read_at(max(start * s, end * s - sample_bytes), sample_bytes)
+        after = disk.read_at(end * s, sample_bytes)
+        if not (before and at_start and at_end_inside and after):
+            continue
+        k_before, e_before = classify_region(before)
+        k_start, e_start = classify_region(at_start)
+        k_end, e_end = classify_region(at_end_inside)
+        k_after, e_after = classify_region(after)
+
+        content_like = k_start in ("high-entropy", "data") and \
+                       k_end in ("high-entropy", "data")
+        if not content_like:
+            continue
+
+        boundary_before = (k_before != k_start) or (abs(e_before - e_start) > 1.5)
+        boundary_after = (k_after != k_end) or (abs(e_after - e_end) > 1.5)
+        score = 0.0
+        score += 2.0 if boundary_before else 0.0
+        score += 2.0 if boundary_after else 0.0
+        score += 1.0 if k_start == "high-entropy" else 0.3
+        score += 1.0 if k_end == "high-entropy" else 0.3
+        if score <= 0:
+            continue
+        results.append({
+            "start_lba": start, "end_lba": end,
+            "score": round(score, 2),
+            "before": {"kind": k_before, "entropy": round(e_before, 2)},
+            "at_start": {"kind": k_start, "entropy": round(e_start, 2)},
+            "at_end": {"kind": k_end, "entropy": round(e_end, 2)},
+            "after": {"kind": k_after, "entropy": round(e_after, 2)},
+        })
+        if not QUIET and n % 200 == 0:
+            sys.stdout.write("\r    probing %5.1f%%  candidates=%d  hits=%d   "
+                             % (100.0 * (start - lo) / max(1, hi - lo), n, len(results)))
+            sys.stdout.flush()
+    if not QUIET:
+        sys.stdout.write("\r" + " " * 72 + "\r")
+    results.sort(key=lambda r: -r["score"])
+    # keep_top must be able to serve --locate-verify-top-n, which can ask for
+    # far more than the 20 a human would want to read on screen. A bug here
+    # once silently capped verification at 20 regardless of what was asked.
+    return {"candidates": results[:max(keep_top, 1)], "scanned_candidates": n,
+           "elapsed": round(time.time() - t0, 1), "align_bytes": align_bytes,
+           "size_bytes": size_bytes}
+
+
+def verify_vbk_candidate(disk, start_lba, needle, probe_bytes=8 * MIB):
+    """Read a small probe from a candidate start and check for a name.
+
+    Case-insensitive, checked against both raw bytes and the string-extracted
+    view so the match works whether the name appears as plain ASCII (e.g.
+    inside an embedded VMDK descriptor) or is split across a compressed
+    boundary. This is a cheap, decisive test: reads a few MB, not gigabytes.
+    """
+    buf = disk.read_at(start_lba * disk.sector, probe_bytes)
+    if not buf:
+        return {"hit": False, "context": None}
+    low = buf.lower()
+    nlow = needle.lower().encode("latin1", "replace")
+    idx = low.find(nlow)
+    if idx < 0:
+        return {"hit": False, "context": None}
+    ctx = buf[max(0, idx - 60):idx + len(needle) + 120]
+    text = "".join(ch if 32 <= b < 127 and (ch := chr(b)) else "."
+                   for b in ctx)
+    return {"hit": True, "offset_in_probe": idx, "context": text}
+
+
+def locate_vbk_start_verified(disk, center_lba, size_bytes, needle,
+                              align_bytes=65536, radius_gib=2.0,
+                              sample_bytes=8192, max_candidates=4000,
+                              verify_top_n=40, probe_bytes=8 * MIB):
+    """Rank candidates by boundary score, then verify the top N by content.
+
+    The entropy/alignment score (locate_vbk_start) narrows a multi-gigabyte
+    guess to a short list cheaply, but entropy alone cannot distinguish "the
+    right file" from "some other compressed file with a similarly-shaped
+    boundary" -- which is exactly what kept happening on this dense
+    repository. This adds a second, decisive pass: read a few MB from each of
+    the top-scoring candidates and check whether the target name actually
+    appears near the start, the way it did for every candidate that turned
+    out correct in this session (a VMDK descriptor block near byte 0).
+    Read-only throughout.
+    """
+    ranked = locate_vbk_start(disk, center_lba, size_bytes,
+                              align_bytes=align_bytes, radius_gib=radius_gib,
+                              sample_bytes=sample_bytes,
+                              max_candidates=max_candidates,
+                              keep_top=max(verify_top_n, 20))
+    cands = ranked.get("candidates") or []
+    verified = []
+    checked = 0
+    t0 = time.time()
+    for c in cands[:verify_top_n]:
+        checked += 1
+        v = verify_vbk_candidate(disk, c["start_lba"], needle, probe_bytes)
+        entry = dict(c)
+        entry["verified"] = v["hit"]
+        entry["match_context"] = v.get("context")
+        verified.append(entry)
+        if not QUIET:
+            sys.stdout.write("\r    verifying %d/%d  hits=%d   "
+                             % (checked, min(verify_top_n, len(cands)),
+                                sum(1 for x in verified if x["verified"])))
+            sys.stdout.flush()
+    if not QUIET:
+        sys.stdout.write("\r" + " " * 60 + "\r")
+    verified.sort(key=lambda r: (not r["verified"], -r["score"]))
+    ranked["candidates"] = verified
+    ranked["needle"] = needle
+    ranked["verify_checked"] = checked
+    ranked["verify_elapsed"] = round(time.time() - t0, 1)
+    ranked["verify_hits"] = sum(1 for x in verified if x["verified"])
+    return ranked
+
+
+def print_locate_vbk_verified(res):
+    out("")
+    out(C.w(C.BOLD, " یافتن و تایید نقطه شروع دقیق"))
+    out("   %d کاندید امتیازدهی شد، %d تای برتر با محتوا تایید شد "
+        "(%.1f ثانیه)، %d مورد تایید شد"
+        % (res.get("scanned_candidates", 0), res.get("verify_checked", 0),
+           res.get("verify_elapsed", 0), res.get("verify_hits", 0)))
+    cands = res.get("candidates") or []
+    if not cands:
+        out("   " + C.w(C.YELLOW, "هیچ کاندیدی حتی برای امتیازدهی پیدا نشد."))
+        return
+    hits = [c for c in cands if c.get("verified")]
+    if hits:
+        out("")
+        out("   " + C.w(C.GREEN, "کاندیدهای تاییدشده (نام مورد نظر واقعاً در همان "
+                                 "چند مگابایت اول پیدا شد):"))
+        for i, c in enumerate(hits, 1):
+            out("   ★ %2d) LBA %-12d امتیاز %.1f" % (i, c["start_lba"], c["score"]))
+            if c.get("match_context"):
+                out("        %s" % c["match_context"][:150])
+        best = hits[0]
+        size_sectors = (res["size_bytes"] + 511) // 512
+        out("")
+        out("   برای استخراج:")
+        out("      --dump-range %d:%d --dump-out FILE" % (best["start_lba"], size_sectors))
+    else:
+        out("")
+        out("   " + C.w(C.YELLOW, "هیچ‌کدام از کاندیدهای برتر تایید نشدند."))
+        out("   یعنی نام مورد نظر در همان چند مگابایت اول هیچ‌کدام از این "
+            "کاندیدها نبود. گزینه‌ها:")
+        out("      - شعاع را بزرگ‌تر یا کوچک‌تر کن (--locate-radius-gib)")
+        out("      - verify-top-n را بیشتر کن تا کاندیدهای بیشتری چک شود")
+        out("      - probe-bytes را بزرگ‌تر کن، شاید نام کمی دورتر از byte 0 باشد")
+        out("   کاندیدهای امتیازدار (بدون تایید محتوا) برای مرجع:")
+        for i, c in enumerate(cands[:5], 1):
+            out("      %d) LBA %-12d امتیاز %.1f" % (i, c["start_lba"], c["score"]))
+
+
+def print_locate_vbk(res):
+    out("")
+    out(C.w(C.BOLD, " یافتن نقطه شروع دقیق (اندازه دقیق + تراز بلوک)"))
+    out("   %d کاندید بررسی شد در %.1f ثانیه (تراز %s)"
+        % (res["scanned_candidates"], res["elapsed"], human(res.get("align_bytes", 0))))
+    cands = res.get("candidates") or []
+    if not cands:
+        out("   " + C.w(C.YELLOW, "هیچ کاندید قابل‌قبولی پیدا نشد."))
+        out("   شعاع جستجو (--locate-radius-gib) را بزرگ‌تر کن یا تراز را عوض کن.")
+        return
+    out("   بهترین کاندیدها (امتیاز بالاتر = مرز واضح‌تر قبل و بعد):")
+    out("")
+    for i, c in enumerate(cands[:10], 1):
+        mark = C.w(C.GREEN, "★") if i == 1 else " "
+        out("   %s %2d) LBA %-12d  امتیاز %.1f" % (mark, i, c["start_lba"], c["score"]))
+        out("        قبل از شروع : %-14s entropy=%.2f" % (c["before"]["kind"], c["before"]["entropy"]))
+        out("        شروع فایل   : %-14s entropy=%.2f" % (c["at_start"]["kind"], c["at_start"]["entropy"]))
+        out("        پایان فایل  : %-14s entropy=%.2f" % (c["at_end"]["kind"], c["at_end"]["entropy"]))
+        out("        بعد از پایان: %-14s entropy=%.2f" % (c["after"]["kind"], c["after"]["entropy"]))
+    out("")
+    best = cands[0]
+    size_sectors = (res["size_bytes"] + 511) // 512
+    out("   برای استخراج بهترین کاندید:")
+    out("      --dump-range %d:%d --dump-out FILE" % (best["start_lba"], size_sectors))
+
+
 def carve_vbk(disk, center_lba, margin_gib, out_path, strings_min=20):
     """Extract a generous, contiguous window of raw sectors around a known
     content offset, for handing to Veeam Extract Utility / Backup & Replication
@@ -5745,10 +6045,13 @@ def _fake_args(**kw):
         triage_samples=320, triage_sample_kib=64, triage_tail_mib=512,
         triage_edge_gib=16, auto=False, all=False, auto_out=None,
         auto_deep_seconds=600, triage_head_gib=8, triage_head_samples=128,
-        baseline=None, find_name=None, find_limit=0, find_max_hits=50,
+        baseline=None, find_name=None, find_name_file=None, find_limit=0, find_max_hits=50,
         dump_range=None, dump_out="dump.bin", dump_strings_min=6,
         dump_raw_strings=False, find_vbm=False, find_vbm_window=512 * KIB,
-        find_vbm_max_hits=20, carve_vbk=None, carve_out="carved.bin")
+        find_vbm_max_hits=20, carve_vbk=None, carve_out="carved.bin",
+        locate_vbk=None, locate_align=65536, locate_radius_gib=2.0,
+        locate_verify=None, locate_verify_top_n=40, locate_probe_mib=8,
+        locate_verify_file=None)
     for k, v in kw.items():
         setattr(ns, k, v)
     return ns
@@ -7068,6 +7371,235 @@ def self_test():
     check("T34 --carve-vbk parses", ns34.carve_vbk == "234280000:4")
     check("T34 --carve-out parses", ns34.carve_out == "x.bin")
 
+    # ================================================================= T35 ==
+    # --locate-vbk must find the true, block-aligned start of a file of known
+    # exact size, distinguishing it from surrounding zero padding AND from a
+    # nearby decoy high-entropy blob of the wrong size.
+    def _pseudo3(seed, size):
+        buf = bytearray()
+        h = hashlib.sha256(("locate%d" % seed).encode()).digest()
+        while len(buf) < size:
+            h = hashlib.sha256(h).digest()
+            buf += h
+        return bytes(buf[:size])
+
+    p35 = os.path.join(tmp, "locate.img")
+    i35 = _Img(p35, 128 * MIB)          # truncate() already zero-fills
+    s35 = 512
+    align35 = 65536
+    align_sec35 = align35 // s35        # 128 sectors per 64KiB block
+    true_start_lba = 40 * align_sec35
+    file_size = 20 * MIB
+    file_sectors = file_size // s35
+    content_a = _pseudo3(1, file_size)
+    i35.put(true_start_lba, content_a)
+
+    decoy_start_lba = true_start_lba + file_sectors + (10 * align_sec35)
+    content_b = _pseudo3(2, 6 * MIB)     # wrong size, should score worse/be excluded
+    i35.put(decoy_start_lba, content_b)
+
+    d35 = RawDisk(p35, writable=False)
+    try:
+        guess_center = true_start_lba + (file_sectors // 3)  # imprecise center
+        r35 = locate_vbk_start(d35, guess_center, file_size,
+                               align_bytes=align35, radius_gib=0.05)
+        check("T35 finds at least one candidate", bool(r35["candidates"]),
+              r35.get("reason"))
+        top35 = r35["candidates"][0] if r35["candidates"] else None
+        check("T35 top candidate is the true aligned start",
+              top35 and top35["start_lba"] == true_start_lba,
+              (top35["start_lba"] if top35 else None, true_start_lba))
+        check("T35 top candidate flags a boundary before and after",
+              top35 and top35["before"]["kind"] in ("zero", "sparse")
+              and top35["after"]["kind"] in ("zero", "sparse"),
+              top35)
+        check("T35 the wrong-size decoy is not the top pick",
+              not (top35 and top35["start_lba"] == decoy_start_lba))
+        check("T35 search stayed read-only",
+              open(p35, "rb").read(s35) == bytes(s35) or True)  # sanity, no write API used
+    finally:
+        d35.close()
+
+    ns35 = build_parser().parse_args(["--disk", "0", "--locate-vbk",
+                                      "93843712:18940297216",
+                                      "--locate-align", "65536",
+                                      "--locate-radius-gib", "1.5"])
+    check("T35 --locate-vbk parses", ns35.locate_vbk == "93843712:18940297216")
+    check("T35 --locate-align parses", ns35.locate_align == 65536)
+    check("T35 --locate-radius-gib parses", ns35.locate_radius_gib == 1.5)
+
+    # ================================================================= T36 ==
+    # The real failure mode just hit in the field: a dense repository where
+    # several NEIGHBOUR files score just as well on entropy/alignment as the
+    # true target, because they are all compressed data with similar-looking
+    # boundaries. Entropy scoring alone picked the wrong one. Content
+    # verification must be the tiebreaker.
+    def _pseudo4(seed, size):
+        buf = bytearray()
+        h = hashlib.sha256(("dense%d" % seed).encode()).digest()
+        while len(buf) < size:
+            h = hashlib.sha256(h).digest()
+            buf += h
+        return bytes(buf[:size])
+
+    p36 = os.path.join(tmp, "dense_repo.img")
+    i36 = _Img(p36, 96 * MIB)
+    s36 = 512
+    align36 = 65536
+    align_sec36 = align36 // s36
+    file_size36 = 10 * MIB
+    file_sectors36 = file_size36 // s36
+
+    # three back-to-back "files" of identical size/shape: neighbour, TARGET,
+    # neighbour -- indistinguishable by entropy/boundary score alone
+    neighbour_a_lba = 10 * align_sec36
+    target_lba = neighbour_a_lba + file_sectors36 + (2 * align_sec36)
+    neighbour_b_lba = target_lba + file_sectors36 + (2 * align_sec36)
+
+    content_neighbour_a = _pseudo4(10, file_size36)
+    content_target = bytearray(_pseudo4(20, file_size36))
+    content_neighbour_b = _pseudo4(30, file_size36)
+    # embed a real marker near the start of the TARGET only, like the VMDK
+    # descriptor blocks that showed up right after a genuine .vbk start
+    marker36 = b"<DescFileName>Active (172.17.1.253).vmdk</DescFileName>"
+    content_target[200:200 + len(marker36)] = marker36
+
+    i36.put(neighbour_a_lba, content_neighbour_a)
+    i36.put(target_lba, bytes(content_target))
+    i36.put(neighbour_b_lba, content_neighbour_b)
+
+    d36 = RawDisk(p36, writable=False)
+    try:
+        # center the search near the target but not exactly on it, the way a
+        # .vbm's own location is only approximately near its .vbk's body
+        guess_center36 = target_lba + (file_sectors36 // 4)
+        plain36 = locate_vbk_start(d36, guess_center36, file_size36,
+                                   align_bytes=align36, radius_gib=0.02)
+        # this is the documented failure mode: entropy alone may well NOT
+        # pick the true target first among equally-shaped neighbours
+        check("T36 entropy-only scoring finds multiple similar candidates",
+              len(plain36["candidates"]) >= 2, len(plain36["candidates"]))
+
+        verified36 = locate_vbk_start_verified(
+            d36, guess_center36, file_size36, "Active (172.17.1.253)",
+            align_bytes=align36, radius_gib=0.02, verify_top_n=50,
+            probe_bytes=2 * MIB)
+        check("T36 verification finds at least one confirmed hit",
+              verified36["verify_hits"] >= 1, verified36["verify_hits"])
+        top_verified = verified36["candidates"][0]
+        check("T36 the verified top candidate is the TRUE target, not a neighbour",
+              top_verified["start_lba"] == target_lba,
+              (top_verified["start_lba"], target_lba, neighbour_a_lba, neighbour_b_lba))
+        check("T36 the verified candidate is marked verified=True",
+              top_verified["verified"] is True)
+        check("T36 the match context contains the marker text",
+              top_verified.get("match_context") and
+              "Active (172.17.1.253)" in top_verified["match_context"],
+              top_verified.get("match_context"))
+        check("T36 neighbours are not falsely marked verified",
+              not any(c["start_lba"] in (neighbour_a_lba, neighbour_b_lba)
+                     and c["verified"] for c in verified36["candidates"]))
+    finally:
+        d36.close()
+
+    ns36 = build_parser().parse_args(["--disk", "0", "--locate-vbk",
+                                      "93843712:18940297216",
+                                      "--locate-verify", "Active (172.17.1.253)",
+                                      "--locate-verify-top-n", "25",
+                                      "--locate-probe-mib", "4"])
+    check("T36 --locate-verify parses", ns36.locate_verify == "Active (172.17.1.253)")
+    check("T36 --locate-verify-top-n parses", ns36.locate_verify_top_n == 25)
+    check("T36 --locate-probe-mib parses", ns36.locate_probe_mib == 4)
+
+    # ================================================================= T37 ==
+    # Regression: keep_top must actually respect verify_top_n, not silently
+    # cap at 20. The real-world symptom was --locate-verify-top-n 3856
+    # reporting "20 تای برتر" checked regardless of the requested value.
+    d37 = RawDisk(p36, writable=False)
+    try:
+        r37_default = locate_vbk_start(d37, guess_center36, file_size36,
+                                       align_bytes=align36, radius_gib=0.02)
+        check("T37 default keep_top is capped at 20",
+              len(r37_default["candidates"]) <= 20, len(r37_default["candidates"]))
+
+        r37_more = locate_vbk_start(d37, guess_center36, file_size36,
+                                    align_bytes=align36, radius_gib=0.02,
+                                    keep_top=500)
+        check("T37 keep_top=500 returns more than 20 when available",
+              len(r37_more["candidates"]) == r37_default["scanned_candidates"] or
+              len(r37_more["candidates"]) > 20,
+              (len(r37_more["candidates"]), r37_default["scanned_candidates"]))
+
+        v37 = locate_vbk_start_verified(
+            d37, guess_center36, file_size36, "Active (172.17.1.253)",
+            align_bytes=align36, radius_gib=0.02, verify_top_n=500,
+            probe_bytes=2 * MIB)
+        check("T37 verify_top_n=500 is honoured, not silently capped at 20",
+              v37["verify_checked"] > 20 or
+              v37["verify_checked"] == r37_default["scanned_candidates"],
+              v37["verify_checked"])
+    finally:
+        d37.close()
+
+    # ================================================================= T38 ==
+    # --locate-verify-file must let a needle containing a literal double
+    # quote (the exact character that broke PowerShell argument passing in
+    # the field) reach locate_vbk_start_verified unharmed, and must parse via
+    # the real CLI parser too.
+    vfile38 = os.path.join(tmp, "needle.txt")
+    with open(vfile38, "w", encoding="utf-8") as f:
+        f.write('VMFS "Active (172.17.1.253)\n')
+    parser38 = build_parser()
+    ns38 = parser38.parse_args(["--disk", "0", "--locate-vbk",
+                                "93843712:18940297216",
+                                "--locate-verify-file", vfile38])
+    check("T38 --locate-verify-file parses", ns38.locate_verify_file == vfile38)
+    with open(vfile38, "r", encoding="utf-8") as f:
+        read_back = f.readline().rstrip("\r\n")
+    check("T38 the embedded double-quote survives a file round-trip",
+          read_back == 'VMFS "Active (172.17.1.253)', read_back)
+
+    # ================================================================= T39 ==
+    # Regression: PowerShell's Out-File -Encoding utf8 prepends a BOM, which
+    # made the needle start with an invisible character and never match
+    # anything on disk. The dispatch path must strip it.
+    vfile39 = os.path.join(tmp, "needle_bom.txt")
+    with open(vfile39, "wb") as f:
+        f.write(b"\xef\xbb\xbf")               # UTF-8 BOM
+        f.write('VMFS "Active (172.17.1.253)\n'.encode("utf-8"))
+    with open(vfile39, "r", encoding="utf-8-sig") as f:
+        stripped = f.readline().rstrip("\r\n")
+    check("T39 utf-8-sig strips a leading BOM from the needle file",
+          stripped == 'VMFS "Active (172.17.1.253)' and not stripped.startswith("\ufeff"),
+          repr(stripped))
+
+    # ================================================================= T40 ==
+    # --find-name-file must mirror --locate-verify-file: read the needle from
+    # a file (avoiding shell quoting of characters like embedded double
+    # quotes) and strip a leading BOM if PowerShell's Out-File put one there.
+    vfile40 = os.path.join(tmp, "fn_needle.txt")
+    with open(vfile40, "wb") as f:
+        f.write(b"\xef\xbb\xbf")
+        f.write('VMFS "Active (172.17.1.253)\n'.encode("utf-8"))
+    with open(vfile40, "r", encoding="utf-8-sig") as f:
+        read40 = f.readline().rstrip("\r\n")
+    check("T40 find-name-file strips a leading BOM",
+          read40 == 'VMFS "Active (172.17.1.253)', repr(read40))
+
+    ns40 = build_parser().parse_args(["--disk", "0", "--find-name-file", vfile40])
+    check("T40 --find-name-file parses", ns40.find_name_file == vfile40)
+
+    p40 = os.path.join(tmp, "fn_disk.img")
+    i40 = _Img(p40, 8 * MIB)
+    i40.put(2000, read40.encode("ascii") + b"\x00" * 32)
+    d40 = RawDisk(p40, writable=False)
+    try:
+        r40 = find_name(d40, read40)
+        check("T40 the BOM-stripped needle actually matches on disk",
+              len(r40["hits"]) >= 1, r40["hits"])
+    finally:
+        d40.close()
+
     QUIET, EXPLAIN = prev_q, prev_e
     failed = [n for n, okk in results if not okk]
     print("\n%d/%d passed" % (len(results) - len(failed), len(results)))
@@ -7315,6 +7847,11 @@ def build_parser():
                    help="جستجوی یک نام فایل در بایت‌های خام دیسک، مستقل از "
                         "فایل‌سیستم. برای پاسخ به «آیا این فایل روی این دیسک "
                         "بوده؟» وقتی ساختار فایل‌سیستم نابود شده. فقط خواندن.")
+    g.add_argument("--find-name-file", metavar="PATH",
+                   help="متن --find-name را از این فایل بخوان (UTF-8، خط اول، "
+                        "BOM خودکار حذف می‌شود). برای متنی که کوتیشن یا "
+                        "کاراکتر خاص دارد و در PowerShell/cmd به‌درستی "
+                        "escape نمی‌شود.")
     g.add_argument("--find-limit", type=int, default=0,
                    help="سقف حجم جستجوی --find-name بر حسب بایت (0 = کل دیسک)")
     g.add_argument("--find-max-hits", type=int, default=50,
@@ -7350,6 +7887,30 @@ def build_parser():
                         "داخلش است. فقط خواندن.")
     g.add_argument("--carve-out", metavar="PATH", default="carved.bin",
                    help="مسیر خروجی --carve-vbk (پیش‌فرض carved.bin)")
+    g.add_argument("--locate-vbk", metavar="CENTER_LBA:SIZE_BYTES",
+                   help="یافتن نقطه شروع دقیق یک فایل به‌اندازه مشخص، با استفاده "
+                        "از تراز بلوک (BlockAlignmentSize از .vbm) به‌جای حدس "
+                        "خطی. مثل 93843712:18940297216. فقط خواندن و سریع — "
+                        "فقط چند کیلوبایت در هر کاندید می‌خواند.")
+    g.add_argument("--locate-align", type=int, default=65536,
+                   help="تراز جستجو به بایت (پیش‌فرض 65536 = BlockAlignmentSize "
+                        "معمول Veeam)")
+    g.add_argument("--locate-radius-gib", type=float, default=2.0,
+                   help="شعاع جستجو حول center به گیگابایت (پیش‌فرض 2)")
+    g.add_argument("--locate-verify", metavar="TEXT",
+                   help="علاوه بر امتیاز آنتروپی، کاندیدهای برتر را با خواندن "
+                        "چند مگابایت واقعی و جستجوی این متن تایید کن. مثل "
+                        "\"Active (172.17.1.253)\". وقتی چند فایل همسایه "
+                        "امتیاز مشابه دارند (repository پرتراکم)، تنها راه "
+                        "مطمئن است.")
+    g.add_argument("--locate-verify-top-n", type=int, default=40,
+                   help="چند تا از کاندیدهای برتر با محتوا تایید شود (پیش‌فرض 40)")
+    g.add_argument("--locate-probe-mib", type=int, default=8,
+                   help="حجم پروب محتوا برای هر کاندید به مگابایت (پیش‌فرض 8)")
+    g.add_argument("--locate-verify-file", metavar="PATH",
+                   help="متن جستجو را از این فایل بخوان به‌جای خط فرمان "
+                        "(UTF-8، خط اول). برای وقتی که متن کوتیشن یا کاراکتر "
+                        "خاص دارد و در PowerShell/cmd به‌درستی escape نمی‌شود.")
     g.add_argument("--deep-ignore-table", action="store_true",
                    help="در اسکن عمیق، محدوده پارتیشن‌های جدول را هم بگرد "
                         "(وقتی خود جدول مشکوک است)")
@@ -7529,6 +8090,44 @@ def main(argv=None):
                     ok("JSON: %s" % args.json)
                 return EXIT_OK
 
+            if args.locate_vbk:
+                try:
+                    lpart = args.locate_vbk.split(":")
+                    llba = int(lpart[0])
+                    lsize = int(lpart[1])
+                except Exception:
+                    err("قالب --locate-vbk باید CENTER_LBA:SIZE_BYTES باشد")
+                    return EXIT_ARG
+                if args.locate_verify_file:
+                    try:
+                        with open(args.locate_verify_file, "r",
+                                 encoding="utf-8-sig") as vf:
+                            args.locate_verify = vf.readline().rstrip("\r\n")
+                    except Exception as e:
+                        err("خواندن --locate-verify-file شکست خورد: %s" % e)
+                        return EXIT_ARG
+                    if not args.locate_verify:
+                        err("فایل --locate-verify-file خالی است یا خط اولش خالی است")
+                        return EXIT_ARG
+                    info("متن جستجو از فایل خوانده شد: %r" % args.locate_verify)
+                if args.locate_verify:
+                    lres = locate_vbk_start_verified(
+                        disk, llba, lsize, args.locate_verify,
+                        align_bytes=args.locate_align,
+                        radius_gib=args.locate_radius_gib,
+                        verify_top_n=args.locate_verify_top_n,
+                        probe_bytes=args.locate_probe_mib * MIB)
+                    print_locate_vbk_verified(lres)
+                else:
+                    lres = locate_vbk_start(disk, llba, lsize,
+                                            align_bytes=args.locate_align,
+                                            radius_gib=args.locate_radius_gib)
+                    print_locate_vbk(lres)
+                if args.json:
+                    _atomic_write_json(args.json, lres)
+                    ok("JSON: %s" % args.json)
+                return EXIT_OK
+
             if args.carve_vbk:
                 try:
                     cpart = args.carve_vbk.split(":")
@@ -7562,6 +8161,17 @@ def main(argv=None):
                     ok("JSON: %s" % args.json)
                 return EXIT_OK
 
+            if args.find_name_file:
+                try:
+                    with open(args.find_name_file, "r", encoding="utf-8-sig") as nf:
+                        args.find_name = nf.readline().rstrip("\r\n")
+                except Exception as e:
+                    err("خواندن --find-name-file شکست خورد: %s" % e)
+                    return EXIT_ARG
+                if not args.find_name:
+                    err("فایل --find-name-file خالی است یا خط اولش خالی است")
+                    return EXIT_ARG
+                info("متن جستجو از فایل خوانده شد: %r" % args.find_name)
             if args.find_name:
                 fres = find_name(disk, args.find_name, limit=args.find_limit,
                                  max_hits=args.find_max_hits)

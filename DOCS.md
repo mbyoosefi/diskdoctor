@@ -10,7 +10,7 @@
 
 ### DiskDoctor چیست؟
 
-DiskDoctor ابزاری برای بررسی دیسک‌ها و ایمیج‌های خامِ مشکوک است. این ابزار پیش از هر اقدامی مشخص می‌کند که دیسک چه ساختاری دارد، فایل‌سیستم آن چیست و نشانه‌های خرابی تا چه حد جدی‌اند. هدف آن بازگرداندن ساختارهای قابل اثبات است، نه حدس زدن یا آزمایش کردن روی داده‌های شما.
+DiskDoctor ابزاری برای بررسی دیسک‌ها و ایمیج‌های خامِ مشکوک است. این ابزار پیش از هر اقدامی مشخص می‌کند که دیسک چه ساختاری دارد، فایل‌سیستم آن چیست و نشانه‌های خرابی تا چه حد جدی‌اند. هدف آن بازگرداندن ساختارهای قابل اثبات است، نه حدس زدن یا آزمایش کردن روی داده‌های شما. برای حالت‌هایی که ترمیم ساختاری اصلاً ممکن نیست، ابزارهای فارنزیک فقط‌خواندنی هم دارد که در ادامه توضیح داده شده‌اند.
 
 این برنامه در یک فایل پایتون اجرا می‌شود، با Python 3.8 و نسخه‌های جدیدتر سازگار است و به هیچ بستهٔ خارجی نیاز ندارد. از ویندوز، لینوکس و فایل‌های ایمیج خام پشتیبانی می‌کند. زبان پیش‌فرض پیام‌ها فارسی است؛ برای انگلیسی از `--lang en` استفاده کنید.
 
@@ -29,7 +29,7 @@ python diskdoctor.py --disk 3 --image-out D:\img\disk3.img
 - طرح پارتیشن‌بندی: GPT، MBR، superfloppy و RAW
 - فایل‌سیستم‌ها: NTFS، ReFS، exFAT، FAT12/16/32، ext2/3/4، XFS، Btrfs، Linux swap، LVM2، HFS+، APFS، ISO9660، VMFS و BitLocker
 - وضعیت ساختارهای مهم، مانند جدول پارتیشن، بوت‌سکتور و نسخه‌های آینه‌ای
-- گستردگی خرابی با گزینهٔ `--triage`
+- گستردگی خرابی با گزینهٔ `--triage`، از جمله مقایسه با یک ولوم سالمِ کنترل تا آنتروپی بالا (طبیعی در فایل‌های فشرده) با شاهد بازنویسی اشتباه گرفته نشود
 
 DiskDoctor فقط با پیدا کردن یک امضا نتیجه‌گیری نمی‌کند. برای هر پارتیشنِ احتمالی، چند شاهد مستقل را کنار هم می‌گذارد: اطلاعات جدول پارتیشن، سازگاری فیلدهای بوت‌سکتور، وجود نسخهٔ پشتیبان و امکان اثبات اندازهٔ ولوم از داده‌های همان دیسک. برای دیدن این شواهد از `--explain` استفاده کنید.
 
@@ -43,9 +43,22 @@ DiskDoctor فقط با پیدا کردن یک امضا نتیجه‌گیری ن�
 | `INFERRED_REBUILD` | ساختار از مجموعهٔ شواهد بازسازی می‌شود. | `--apply --allow-inferred` |
 | `BLOCKED` | شواهد کافی نیست یا انجام کار خطرناک است. | عملیات متوقف می‌شود. |
 
-برای نمونه، بازگرداندن نسخهٔ پشتیبان GPT به هدر اصلی یک `SAFE_RESTORE` است. اما ساختن دوبارهٔ جدول پارتیشن از روی شواهد، `INFERRED_REBUILD` محسوب می‌شود و تأیید صریح بیشتری می‌خواهد.
+برای نمونه، بازگرداندن نسخهٔ پشتیبان GPT به هدر اصلی یک `SAFE_RESTORE` است — آرایهٔ ورودی‌ها عیناً کپی می‌شود و فقط فیلدهای موقعیت و CRC تغییر می‌کنند. اما ساختن دوبارهٔ جدول پارتیشن از روی شواهد، `INFERRED_REBUILD` محسوب می‌شود و تأیید صریح بیشتری می‌خواهد.
 
-پیش از نوشتن، DiskDoctor یک Journal ایجاد می‌کند و وضعیت هر تغییر را ثبت می‌کند. اگر فرایند در میانهٔ کار متوقف شود، می‌توانید با `--undo` تغییرات ثبت‌شده را بایت‌به‌بایت بازگردانید.
+پیش از نوشتن، DiskDoctor یک Journal ایجاد و fsync می‌کند و وضعیت هر تغییر را جداگانه ثبت می‌کند. اگر فرایند در میانهٔ کار متوقف شود، Journal دقیقاً می‌گوید چه چیزی نوشته شده، و می‌توانید با `--undo` تغییرات ثبت‌شده را بایت‌به‌بایت بازگردانید — حتی نسخهٔ نیمه‌کاره را.
+
+### ابزارهای فارنزیک (فقط‌خواندنی)
+
+وقتی ترمیم ساختاری کافی نیست — مثلاً متادیتای فایل‌سیستم واقعاً از بین رفته — این ابزارها کمک می‌کنند بفهمید چه چیزی روی دیسک باقی مانده، بدون اینکه چیزی بنویسید:
+
+| گزینه | کاربرد |
+|---|---|
+| `--triage` | تشخیص عمق خرابی: سکتور اول، آنتروپی، جستجوی ساختار در انتهای ولوم، نقشهٔ خرابی، پویش رو به جلو برای اولین ساختار سالم، و نتیجه‌گیری با گام بعدی |
+| `--baseline DISK:LBA` | یک ولوم سالم را به‌عنوان کنترل معرفی می‌کند تا آنتروپی بدون مقایسه به‌عنوان شاهد خرابی استفاده نشود |
+| `--find-name TEXT` | جستجوی نام فایل در بایت‌های خام دیسک، مستقل از فایل‌سیستم (UTF-16 و ASCII) |
+| `--find-vbm` | جستجوی محتوای واقعی فایل `.vbm` ویم (نه فقط اسمش) و استخراج مسیر اصلی، اندازهٔ دقیق و وضعیت رمزنگاری |
+| `--dump-range LBA:COUNT` | استخراج یک محدودهٔ سکتور خام به فایل، به‌همراه رشته‌های خوانای داخلش |
+| `--carve-vbk LBA:GIB` | استخراج یک محدودهٔ بزرگ اطراف یک نقطهٔ شناخته‌شده، برای دادن به ابزار بازیابی Veeam |
 
 ### روند پیشنهادی
 
@@ -80,6 +93,13 @@ python diskdoctor.py --disk 3 --action gpt-restore-primary --apply
 python diskdoctor.py --undo diskdoctor_backups\journal_XXXX.json
 ```
 
+اگر هیچ اقدام ترمیمی پیشنهاد نشد (مثلاً چون متادیتا واقعاً از بین رفته)، سراغ ابزارهای فارنزیک بروید:
+
+```powershell
+python diskdoctor.py --disk 3 --find-vbm --json vbm.json
+python diskdoctor.py --disk 3 --carve-vbk 234280000:4 --carve-out candidate.bin
+```
+
 برای بررسی همهٔ دیسک‌ها در حالت فقط‌خواندنی نیز می‌توانید از این دستور استفاده کنید:
 
 ```powershell
@@ -88,9 +108,10 @@ python diskdoctor.py --auto --all
 
 ### موارد خارج از محدوده
 
-- DiskDoctor هیچ ساختار ReFS را در سطح سکتور نمی‌نویسد. برای ReFS شواهد را جمع می‌کند و در صورت مناسب بودن، استفاده از `refsutil salvage` را پیشنهاد می‌دهد.
+- DiskDoctor هیچ ساختار ReFS را در سطح سکتور نمی‌نویسد. برای ReFS شواهد را جمع می‌کند و در صورت مناسب بودن، استفاده از `refsutil salvage` را پیشنهاد می‌دهد — همراه با هشدار دربارهٔ سقف نسخهٔ ReFS که هر build از `refsutil` می‌شناسد.
 - بازسازی دیسک‌های پویا (LDM) و Storage Spaces پشتیبانی نمی‌شود.
 - داده‌ای که واقعاً بازنویسی شده باشد قابل بازگردانی نیست. ترمیم ساختار، دادهٔ پاک‌شده یا بازنویسی‌شده را بازنمی‌گرداند.
+- فرمت فایل‌های `.vbk`/`.vib` ویم مستند نیست (خود Veeam این را در فروم رسمی‌اش تصریح کرده)، پس `--carve-vbk` امضای شروع فایل را حدس نمی‌زند؛ فقط یک محدودهٔ بزرگ اطراف نقطه‌ای که محتوا در آن تایید شده استخراج می‌کند.
 
 ### آزمون و کدهای خروج
 
@@ -123,7 +144,7 @@ python diskdoctor.py --self-test
 
 ### What is DiskDoctor?
 
-DiskDoctor examines uncertain disks and raw disk images. Before proposing any action, it identifies the disk layout, filesystem, and apparent severity of damage. Its purpose is to restore structures that can be demonstrated to be valid—not to guess or experiment on your data.
+DiskDoctor examines uncertain disks and raw disk images. Before proposing any action, it identifies the disk layout, filesystem, and apparent severity of damage. Its purpose is to restore structures that can be demonstrated to be valid—not to guess or experiment on your data. For cases where structural repair isn't possible at all, it also includes read-only forensic tools, covered below.
 
 It is a single Python file, works with Python 3.8+, and has no third-party dependencies. It runs on Windows, Linux, and raw image files. Persian is the default interface language; use `--lang en` for English.
 
@@ -142,7 +163,7 @@ If the disk makes unusual noises, reports SMART failures, or is difficult to rea
 - Partition layouts: GPT, MBR, superfloppy, and RAW
 - Filesystems: NTFS, ReFS, exFAT, FAT12/16/32, ext2/3/4, XFS, Btrfs, Linux swap, LVM2, HFS+, APFS, ISO9660, VMFS, and BitLocker
 - Critical structures such as partition tables, boot sectors, and mirrors
-- Damage extent through `--triage`
+- Damage extent through `--triage`, including comparison against a known-healthy control volume so high entropy (normal in compressed files) isn't mistaken for evidence of an overwrite
 
 DiskDoctor does not treat a single signature as proof. For each possible partition, it combines independent evidence: partition-table data, internally consistent boot-sector fields, a valid backup copy, and a provable volume length. Use `--explain` to inspect that evidence.
 
@@ -156,9 +177,22 @@ Every repair falls into one of three classes:
 | `INFERRED_REBUILD` | A structure is reconstructed from supporting evidence. | `--apply --allow-inferred` |
 | `BLOCKED` | Evidence is insufficient or the action is unsafe. | The action stops. |
 
-For example, restoring a valid backup GPT header to the primary location is a `SAFE_RESTORE`. Rebuilding a partition table from evidence is an `INFERRED_REBUILD` and requires an additional, explicit confirmation.
+For example, restoring a valid backup GPT header to the primary location is a `SAFE_RESTORE` — the entry array is copied verbatim and only location fields and CRCs change. Rebuilding a partition table from evidence is an `INFERRED_REBUILD` and requires an additional, explicit confirmation.
 
-Before writing, DiskDoctor creates a journal and records the state of every change. If the process stops partway through, use `--undo` to revert the recorded changes byte-for-byte.
+Before writing, DiskDoctor creates and fsyncs a journal, recording the state of each change individually. If the process stops partway through, the journal states exactly what landed, and `--undo` reverts recorded changes byte-for-byte — including a partial one.
+
+### Forensic tools (read-only)
+
+When structural repair isn't enough — for example when a filesystem's own metadata is genuinely gone — these help you understand what survives on the disk without writing anything:
+
+| Option | Purpose |
+|---|---|
+| `--triage` | Damage-depth assessment: first sector, entropy, a sweep for surviving structures at the volume tail, a damage map, a forward scan for the first intact structure, and a verdict with next steps |
+| `--baseline DISK:LBA` | Supplies a known-healthy volume as a control so entropy is never treated as evidence of damage without a comparison |
+| `--find-name TEXT` | Searches raw disk bytes for a filename, independent of the filesystem (UTF-16 and ASCII) |
+| `--find-vbm` | Searches for the actual content of a Veeam `.vbm` file (not just its name) and extracts the original path, exact size, and encryption state |
+| `--dump-range LBA:COUNT` | Extracts a raw sector range to a file, along with the readable strings inside it |
+| `--carve-vbk LBA:GIB` | Extracts a large window around a known-good offset, for handing to Veeam's recovery tooling |
 
 ### Recommended workflow
 
@@ -193,6 +227,13 @@ Undo recorded changes if necessary:
 python diskdoctor.py --undo diskdoctor_backups\journal_XXXX.json
 ```
 
+If no repair is suggested (e.g. because metadata is genuinely gone), reach for the forensic tools instead:
+
+```powershell
+python diskdoctor.py --disk 3 --find-vbm --json vbm.json
+python diskdoctor.py --disk 3 --carve-vbk 234280000:4 --carve-out candidate.bin
+```
+
 To inspect every disk without writing anything:
 
 ```powershell
@@ -201,9 +242,10 @@ python diskdoctor.py --auto --all
 
 ### Out of scope
 
-- DiskDoctor never writes ReFS structures at sector level. It gathers evidence and, where appropriate, suggests `refsutil salvage`.
+- DiskDoctor never writes ReFS structures at sector level. It gathers evidence and, where appropriate, suggests `refsutil salvage` — with a warning about the ReFS version ceiling each `refsutil` build supports.
 - Dynamic-disk (LDM) and Storage Spaces reconstruction are not supported.
 - Structural repair cannot recover data that has genuinely been overwritten.
+- Veeam's `.vbk`/`.vib` storage format is undocumented (Veeam has said so explicitly on its own forum), so `--carve-vbk` never guesses a file-start signature — it only extracts a large window around an offset where content was already confirmed.
 
 ### Testing and exit codes
 
