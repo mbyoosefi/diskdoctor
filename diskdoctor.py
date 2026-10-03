@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 r"""
 ================================================================================
-DiskDoctor v1.9.5  —  Forensic scanner + evidence-based repair engine
+DiskDoctor v2.0.0-rc1  —  Forensic scanner + evidence-based repair engine
 اسکن فارنزیک و ترمیم مبتنی بر شواهد برای دیسک‌هایی که پس از اصلاح VMDK
 در ویندوز Attach/Assign شده‌اند.
 ================================================================================
@@ -373,10 +373,9 @@ triage — تشخیص عمق خرابی (فقط خواندن):
   --allow-inferred       اجازه اضافه و صریح برای اقدام‌های INFERRED_REBUILD.
                          --apply به‌تنهایی برای سنتز ساختار کافی نیست.
   --yes                  رد شدن از تایید تایپی (برای اسکریپت).
-  --force                عبور از محافظت‌ها. blockerهای سراسری را هم رد
-                         می‌کند؛ فقط وقتی دقیقاً می‌دانی چه می‌کنی.
-  --offline              پاک کردن فلگ ReadOnly، Offline کردن دیسک هنگام
-                         نوشتن و Online کردن دوباره (ویندوز).
+  --force                منسوخ؛ هیچ محافظ نوشتن یا تأییدی را دور نمی‌زند.
+  --offline              برای سازگاری نگه داشته شده؛ کنترل حالت دیسک هنگام
+                         نوشتن اجباری است و حالت اصلی پس از تأیید بازمی‌گردد.
   --backup-dir DIR       محل Journal و بکاپ ساختارها.
                          پیش‌فرض: ./diskdoctor_backups
 
@@ -453,7 +452,11 @@ import tempfile
 import time
 import uuid
 
-VERSION = "1.9.5"
+import diskdoctor_core as core
+import diskdoctor_safety as safety
+import diskdoctor_imaging as imaging
+
+VERSION = "2.0.0-rc1"
 IS_WIN = (os.name == "nt")
 IS_LINUX = sys.platform.startswith("linux")
 
@@ -502,7 +505,7 @@ MSGS = {
         "journal_saved": "Journal ذخیره شد",
         "undo_done": "بازگردانی کامل شد",
         "dryrun": "پیش‌نمایش (بدون نوشتن)",
-        "sys_disk_block": "این دیسک شامل ولوم سیستمی است. نوشتن مسدود شد. عبور: --force.",
+        "sys_disk_block": "این دیسک شامل ولوم سیستمی است. نوشتن مطلقاً مسدود است.",
         "need_inferred": "این اقدام ساختار را سنتز می‌کند. علاوه بر --apply به "
                          "--allow-inferred هم نیاز دارد.",
         "evidence": "شواهد",
@@ -526,7 +529,7 @@ MSGS = {
         "journal_saved": "Journal saved",
         "undo_done": "Undo complete",
         "dryrun": "Preview (no write)",
-        "sys_disk_block": "This disk holds a system volume. Writing blocked. Override: --force.",
+        "sys_disk_block": "BLOCKED_SYSTEM_DISK: raw mutation is absolutely forbidden.",
         "need_inferred": "This action synthesises structure. It needs --allow-inferred "
                          "in addition to --apply.",
         "evidence": "Evidence",
@@ -772,7 +775,9 @@ class RawDisk(object):
         self.size = 0
         self.sector = sector_size or DEFAULT_SECTOR
         self._explicit_sector = sector_size is not None
+        self._write_authorized = False
         self._open()
+        safety.attach_identity(sys.modules[__name__], self)
 
     # -- lifecycle ---------------------------------------------------------
     def _open(self):
@@ -910,29 +915,37 @@ class RawDisk(object):
         return self.read_at(lba * self.sector, count * self.sector)
 
     def write_at(self, offset, data):
-        """Aligned-safe write via read-modify-write of the touched sectors."""
-        if not self.writable:
-            raise DiskError("disk opened read-only")
+        """Exact bounded aligned RMW; only a controlled transaction may write."""
+        if not self.writable or not self._write_authorized:
+            raise DiskError("raw mutation requires a v2 transaction capability")
+        if offset < 0 or offset + len(data) > self.size:
+            raise DiskError("write range outside source")
         if not data:
             return 0
-        s = self.sector
-        abs_off = self.base + offset
-        start = (abs_off // s) * s
-        end = ((abs_off + len(data) + s - 1) // s) * s
-        self.fh.seek(start)
-        block = bytearray(self.fh.read(end - start))
-        if len(block) < end - start:
-            block += bytes((end - start) - len(block))
-        skip = abs_off - start
+        sector = self.sector
+        absolute = self.base + offset
+        first = absolute // sector * sector
+        end = ((absolute + len(data) + sector - 1) // sector) * sector
+        if end > self.base + self.size:
+            if self.is_device:
+                raise DiskError("aligned write extends beyond source")
+            end = self.base + self.size
+        self.fh.seek(first)
+        block = bytearray(self.fh.read(end - first))
+        if len(block) != end - first:
+            raise DiskError("short read before aligned write")
+        skip = absolute - first
         block[skip:skip + len(data)] = data
-        self.fh.seek(start)
-        n = self.fh.write(bytes(block))
+        self.fh.seek(first)
+        written = self.fh.write(bytes(block))
+        if written != len(block):
+            raise core.SafetyError("FAILED_WRITE", "short source write")
         try:
             self.fh.flush()
             os.fsync(self.fh.fileno())
-        except Exception:
-            pass
-        return n
+        except OSError as e:
+            raise core.SafetyError("FAILED_DURABILITY", str(e)) from e
+        return len(data)
 
     def write_lba(self, lba, data):
         return self.write_at(lba * self.sector, data)
@@ -1964,7 +1977,7 @@ class Evidence(object):
 
     # -- recording ---------------------------------------------------------
     def set(self, name, value, why=""):
-        self.signals[name] = {"value": bool(value), "why": why}
+        self.signals[name] = {"value": None if value is None else bool(value), "why": why}
 
     def na(self, name, why=""):
         """Signal does not apply to this filesystem; excluded from scoring."""
@@ -2020,7 +2033,9 @@ class Evidence(object):
             "level": self.level,
             "extent_verified": self.extent_verified,
             "extent_source": self.extent_source,
-            "signals": {k: v for k, v in self.signals.items()},
+            "signals": {k: dict(v, state="UNKNOWN" if v["value"] is None else
+                                  ("VERIFIED" if v["value"] else "REJECTED"))
+                        for k, v in self.signals.items()},
             "blockers": [{"key": k, "why": w} for k, w in self.blockers],
         }
 
@@ -2461,6 +2476,10 @@ class Part(object):
 class ScanResult(object):
     def __init__(self, disk):
         self.disk = disk
+        self.run_id = str(uuid.uuid4())
+        self.source_fingerprint = None
+        self.fingerprint_error = None
+        self.transactions = []
         self.scheme = "UNKNOWN"
         self.mbr = None
         self.gpt_p = None
@@ -2472,6 +2491,7 @@ class ScanResult(object):
         self.superfloppy = None
         self.elapsed = 0.0
         self.deep_done = False
+        self.deep_scope = {"state": "UNKNOWN", "reason": "not requested"}
         self.container = None
 
     def add_warn(self, s):
@@ -2493,7 +2513,16 @@ class ScanResult(object):
         d = self.disk
         return {
             "tool": "DiskDoctor", "version": VERSION,
-            "generated": datetime.datetime.now().isoformat(timespec="seconds"),
+            "generated": core.timestamp(),
+            "run_id": self.run_id, "tool_version": VERSION,
+            "source_fingerprint": self.source_fingerprint,
+            "source_identity_state": "VERIFIED" if self.source_fingerprint else "UNKNOWN",
+            "fingerprint_error": self.fingerprint_error,
+            "environment": {"python": sys.version, "platform": sys.platform},
+            "diagnosis_state": "BLOCKED" if self.blockers else "INFERRED",
+            "final_verdict": "DAMAGED_ANALYZED" if self.blockers or self.warnings else "UNKNOWN",
+            "rejected_candidates": [p.to_dict(d.sector) for p in self.all_parts if p.level in ("weak", "blocked")],
+            "transaction_ids": self.transactions,
             "target": d.path, "size": d.size, "size_h": human(d.size),
             "sector_size": d.sector, "sectors": d.sectors,
             "scheme": self.scheme, "container": self.container,
@@ -2511,6 +2540,7 @@ class ScanResult(object):
             "warnings": self.warnings,
             "disk_blockers": [{"key": k, "why": w} for k, w in self.blockers],
             "deep_scan": self.deep_done,
+            "deep_scope": self.deep_scope,
             "elapsed_sec": round(self.elapsed, 3),
         }
 
@@ -2560,6 +2590,11 @@ def scan(disk, deep=False, deep_step=MIB, deep_limit=0, time_budget=0,
     t0 = time.time()
     r = ScanResult(disk)
     Part._n = 0
+    try:
+        initial_source = core.fingerprint(disk)
+    except (core.SafetyError, OSError, DiskError) as e:
+        initial_source = None
+        r.fingerprint_error = str(e)
 
     cont = detect_container(disk)
     if cont:
@@ -2631,6 +2666,7 @@ def scan(disk, deep=False, deep_step=MIB, deep_limit=0, time_budget=0,
         r.carved.extend(deep_scan(disk, step=deep_step, limit=deep_limit,
                                   time_budget=time_budget, known=known))
         r.deep_done = True
+        r.deep_scope = getattr(disk, "_last_deep_scope", {"state": "UNKNOWN"})
     r.carved = dedup_parts(r.carved, [] if ignore_table else r.parts)
 
     # ---- evidence ---------------------------------------------------------
@@ -2640,6 +2676,13 @@ def scan(disk, deep=False, deep_step=MIB, deep_limit=0, time_budget=0,
 
     collect_disk_blockers(disk, r)
     collect_warnings(disk, r)
+    try:
+        if initial_source is not None:
+            core.validate_fingerprint(disk, initial_source)
+            r.source_fingerprint = safety.scan_fingerprint(sys.modules[__name__], disk, r)
+    except (core.SafetyError, OSError, DiskError) as e:
+        r.fingerprint_error = str(e)
+        r.block("source_changed", "BLOCKED_SOURCE_CHANGED: " + str(e))
     r.elapsed = time.time() - t0
     return r
 
@@ -2720,6 +2763,11 @@ def deep_scan(disk, step=MIB, limit=0, time_budget=0, known=(), chunk=8 * MIB):
             sys.stdout.flush()
     if not QUIET and end > 64 * MIB:
         sys.stdout.write("\r" + " " * 70 + "\r")
+    disk._last_deep_scope = {"requested_bytes": end, "processed_bytes": min(pos, end),
+                            "source_bytes": disk.size, "scope_complete": pos >= end,
+                            "source_complete": pos >= end and end == disk.size,
+                            "state": "VERIFIED" if pos >= end and end == disk.size else "UNKNOWN",
+                            "time_budget_seconds": time_budget}
     return found
 
 
@@ -3046,6 +3094,7 @@ def dump_range(disk, start_lba, count, out_path, strings_min=6,
     printable strings it contains, which is usually the reason you wanted the
     bytes in the first place.
     """
+    safety.ensure_destination(sys.modules[__name__], disk, out_path)
     if count <= 0:
         raise DiskError("count must be positive")
     if start_lba < 0 or start_lba >= disk.sectors:
@@ -3059,7 +3108,7 @@ def dump_range(disk, start_lba, count, out_path, strings_min=6,
     written = 0
     bad = 0
     t0 = time.time()
-    with open(out_path, "wb") as f:
+    with open(out_path, "xb") as f:
         pos = 0
         while pos < total:
             n = min(8 * MIB, total - pos)
@@ -3272,11 +3321,13 @@ def find_vbm_metadata(disk, limit=0, window=512 * KIB, max_hits=20, chunk=64 * M
     pos = 0
     overlap = len(VBM_ANCHOR)
     t0 = time.time()
+    short_read = False
     while pos < end and len(hits) < max_hits:
         n = min(chunk, end - pos)
         buf = disk.read_at(pos, n + overlap)
         if not buf:
             break
+        short_read = len(buf) < n
         i = 0
         while len(hits) < max_hits:
             i = buf.find(VBM_ANCHOR, i)
@@ -3295,7 +3346,9 @@ def find_vbm_metadata(disk, limit=0, window=512 * KIB, max_hits=20, chunk=64 * M
             hits.append({"offset": off, "lba": off // disk.sector,
                         "window": window, "fields": fields})
             i += 1
-        pos += n
+        pos += min(n, len(buf))
+        if short_read:
+            break
         if not QUIET:
             sys.stdout.write("\r    searching %5.1f%%  (%s / %s)  hits=%d   "
                              % (100.0 * pos / end, human(pos), human(end), len(hits)))
@@ -3303,7 +3356,10 @@ def find_vbm_metadata(disk, limit=0, window=512 * KIB, max_hits=20, chunk=64 * M
     if not QUIET:
         sys.stdout.write("\r" + " " * 72 + "\r")
     return {"hits": hits, "scanned": min(pos, end),
-           "elapsed": round(time.time() - t0, 1)}
+            "elapsed": round(time.time() - t0, 1), "scope_bytes": end,
+            "source_bytes": disk.size, "truncated": len(hits) >= max_hits,
+            "scope_complete": pos >= end and len(hits) < max_hits and not short_read,
+            "source_complete": pos >= end and end == disk.size and len(hits) < max_hits and not short_read}
 
 
 def print_find_vbm(res):
@@ -3631,11 +3687,13 @@ def find_name(disk, needle, limit=0, max_hits=50, chunk=64 * MIB):
     pos = 0
     overlap = 512
     t0 = time.time()
+    short_read = False
     while pos < end and len(hits) < max_hits:
         n = min(chunk, end - pos)
         buf = disk.read_at(pos, n + overlap)
         if not buf:
             break
+        short_read = len(buf) < n
         low = buf.lower()
         for pat, label, enc in pats:
             i = 0
@@ -3656,7 +3714,9 @@ def find_name(disk, needle, limit=0, max_hits=50, chunk=64 * MIB):
                     hits.append({"offset": off, "lba": off // disk.sector,
                                  "encoding": label, "context": text.strip()})
                 i += 1
-        pos += n
+        pos += min(n, len(buf))
+        if short_read:
+            break
         if not QUIET:
             sys.stdout.write("\r    searching %5.1f%%  (%s / %s)  hits=%d   "
                              % (100.0 * pos / end, human(pos), human(end), len(hits)))
@@ -3665,7 +3725,11 @@ def find_name(disk, needle, limit=0, max_hits=50, chunk=64 * MIB):
         sys.stdout.write("\r" + " " * 72 + "\r")
     return {"needle": needle, "hits": hits, "scanned": min(pos, end),
             "elapsed": round(time.time() - t0, 1),
-            "truncated": len(hits) >= max_hits}
+            "truncated": len(hits) >= max_hits,
+            "scope_bytes": end, "source_bytes": disk.size,
+            "scope_complete": pos >= end and len(hits) < max_hits and not short_read,
+            "source_complete": end == disk.size and pos >= end and len(hits) < max_hits and not short_read,
+            "absence_state": "VERIFIED" if not hits and end == disk.size and pos >= end and not short_read else "UNKNOWN"}
 
 
 def print_find_name(res, disk):
@@ -3675,7 +3739,7 @@ def print_find_name(res, disk):
     out("   خوانده  : %s در %.0f ثانیه" % (human(res["scanned"]), res["elapsed"]))
     if not res["hits"]:
         out("   " + C.w(C.YELLOW, "هیچ موردی پیدا نشد."))
-        out("   یعنی این نام در متادیتای باقی‌مانده این دیسک نیست. توجه: اگر")
+        out("   نبودن نتیجه فقط به محدودهٔ واقعاً بررسی‌شده مربوط است. توجه: اگر")
         out("   ناحیه‌ای که نام در آن بود بازنویسی شده باشد، نبودنش دلیل قطعی")
         out("   بر نبودن فایل روی این ولوم نیست.")
         return
@@ -4236,214 +4300,64 @@ class Patch(object):
                 "len": len(self.new), "status": self.status,
                 "old_b64": base64.b64encode(self.old or b"").decode(),
                 "new_b64": base64.b64encode(self.new).decode(),
-                "sha_old": hashlib.sha256(self.old or b"").hexdigest()[:16],
-                "sha_new": hashlib.sha256(self.new).hexdigest()[:16]}
+                "sha_old": hashlib.sha256(self.old or b"").hexdigest(),
+                "sha_new": hashlib.sha256(self.new).hexdigest()}
 
 
 def _atomic_write_json(path, data):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    if not IS_WIN:
-        try:
-            dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
-            try:
-                os.fsync(dfd)
-            finally:
-                os.close(dfd)
-        except Exception:
-            pass
+    # Reports are immutable artifacts too; output collisions never truncate data.
+    core.durable_json(path, data)
 
 
-class PatchTransaction(object):
-    """Journal-first write transaction with per-patch status."""
-
-    def __init__(self, disk, action_key, patches, backup_dir, meta=None):
-        self.disk = disk
-        self.action = action_key
-        self.patches = patches
-        self.backup_dir = backup_dir
-        self.meta = meta or {}
-        self.path = None
-        self.state = "new"
-
-    def _doc(self):
-        return {
-            "tool": "DiskDoctor", "version": VERSION,
-            "time": datetime.datetime.now().isoformat(timespec="seconds"),
-            "target": self.disk.path, "sector_size": self.disk.sector,
-            "disk_size": self.disk.size, "action": self.action,
-            "state": self.state, "meta": self.meta,
-            "patches": [p.to_dict(i) for i, p in enumerate(self.patches)],
-        }
-
-    def _persist(self):
-        _atomic_write_json(self.path, self._doc())
-
-    def begin(self):
-        """Capture the old bytes and commit the journal to stable storage."""
-        os.makedirs(self.backup_dir, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.path = os.path.join(self.backup_dir, "journal_%s_%s.json" % (ts, self.action))
-        for p in self.patches:
-            p.load_old(self.disk)
-            p.status = "pending"
-        self.state = "open"
-        self._persist()
-        return self.path
-
-    def run(self, force=False):
-        """Apply every patch, verifying and recording each one as it lands."""
-        if self.state != "open":
-            raise DiskError("transaction was not opened")
-        written = 0
-        try:
-            for p in self.patches:
-                cur = self.disk.read_at(p.offset, len(p.new))
-                if cur == p.new:
-                    p.status = "skipped"
-                    self._persist()
-                    continue
-                if p.old is not None and cur != p.old and not force:
-                    p.status = "failed"
-                    self.state = "partial"
-                    self._persist()
-                    raise DiskError("محتوای دیسک از زمان پیش‌نمایش عوض شده "
-                                    "(آفست 0x%X). با --force عبور کن." % p.offset)
-                self.disk.write_at(p.offset, p.new)
-                back = self.disk.read_at(p.offset, len(p.new))
-                if back != p.new and not force:
-                    p.status = "failed"
-                    self.state = "partial"
-                    self._persist()
-                    raise DiskError("verify شکست خورد در 0x%X — نوشتن اثر نکرد. "
-                                    "در ویندوز احتمالاً ولوم mount است؛ با "
-                                    "--offline دوباره اجرا کن." % p.offset)
-                p.status = "done"
-                written += len(p.new)
-                self._persist()
-            self.state = "complete"
-            self._persist()
-            return written
-        except Exception:
-            if self.state == "open":
-                self.state = "partial"
-                self._persist()
-            raise
+class PatchTransaction(core.Transaction):
+    """Fail-closed compatibility name; full v2 preconditions are mandatory."""
+    pass
 
 
 def load_journal(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    raise DiskError("Mutable v1 journals are read-only historical artifacts; use a v2 transaction ID")
 
 
 def inspect_journal(path):
-    j = load_journal(path)
-    out("")
-    out(C.w(C.BOLD, " Journal: %s" % path))
-    out("   action  : %s" % j.get("action"))
-    out("   target  : %s" % j.get("target"))
-    out("   time    : %s" % j.get("time"))
-    st = j.get("state")
-    col = C.GREEN if st == "complete" else (C.YELLOW if st in ("partial", "open") else C.GREY)
-    out("   state   : %s" % C.w(col, str(st)))
-    out("")
-    out(C.w(C.DIM, "   #  status    offset            len  label"))
-    for p in j.get("patches", []):
-        c = {"done": C.GREEN, "pending": C.YELLOW, "failed": C.RED,
-             "skipped": C.GREY, "reverted": C.CYAN}.get(p.get("status"), C.GREY)
-        out("   %-2d %s  0x%012X %6d  %s" %
-            (p.get("i", 0), C.w(c, "%-8s" % p.get("status")), p["offset"],
-             p["len"], p["label"]))
-    out("")
-    if st in ("open", "partial"):
-        warn("این Journal ناتمام است. با --undo می‌توانی همان بخشی که واقعاً "
-             "نوشته شده را برگردانی.")
-    return j
+    # Historical inspection is permitted; it cannot authorize a mutation.
+    with open(path, "r", encoding="utf-8") as f:
+        doc = json.load(f)
+    out(json.dumps(doc, ensure_ascii=False, indent=2))
+    return doc
 
 
 def undo_journal(path, force=False):
-    """Reverse a journal, including a partial one left behind by a crash."""
-    j = load_journal(path)
-    target = j["target"]
-    info("undo target: %s (action=%s, state=%s)" %
-         (target, j.get("action"), j.get("state")))
-    restored = 0
-    with RawDisk(target, sector_size=j.get("sector_size"), writable=True) as d:
-        for pd in reversed(j.get("patches", [])):
-            old = base64.b64decode(pd["old_b64"])
-            new = base64.b64decode(pd["new_b64"])
-            cur = d.read_at(pd["offset"], len(new))
-            status = pd.get("status")
-            if cur == old:
-                pd["status"] = "reverted"
-                continue
-            if cur != new and not force:
-                warn("رد شد: %s @0x%X — محتوای فعلی نه old است نه new."
-                     % (pd["label"], pd["offset"]))
-                continue
-            # a 'pending' patch whose content equals new was written just before
-            # the crash; treat it as done and revert it too
-            d.write_at(pd["offset"], old)
-            back = d.read_at(pd["offset"], len(old))
-            pd["status"] = "reverted" if back == old else "revert_failed"
-            if back == old:
-                restored += len(old)
-            else:
-                err("بازگردانی %s @0x%X تایید نشد." % (pd["label"], pd["offset"]))
-            dbg("reverted %s (was %s)" % (pd["label"], status))
-    j["state"] = "rolled_back"
-    j["undo_time"] = datetime.datetime.now().isoformat(timespec="seconds")
-    _atomic_write_json(path, j)
-    ok("%s — %d bytes restored" % (T("undo_done"), restored))
-    return restored
+    raise DiskError("Legacy journal rollback is disabled; use --undo TRANSACTION_UUID")
 
 
 def check_journals(backup_dir):
-    """Warn about journals that were never completed (crash detection)."""
     if not os.path.isdir(backup_dir):
-        info("پوشه بکاپ وجود ندارد: %s" % backup_dir)
         return EXIT_OK
-    bad = []
-    for fn in sorted(os.listdir(backup_dir)):
-        if not (fn.startswith("journal_") and fn.endswith(".json")):
+    interrupted = False
+    for name in sorted(os.listdir(backup_dir)):
+        directory = os.path.join(backup_dir, name)
+        if not os.path.isdir(directory):
             continue
-        p = os.path.join(backup_dir, fn)
         try:
-            j = load_journal(p)
-        except Exception:
-            bad.append((p, "unreadable"))
-            continue
-        if j.get("state") in ("open", "partial"):
-            done = sum(1 for x in j.get("patches", []) if x.get("status") == "done")
-            bad.append((p, "%s — %d/%d patches written" %
-                        (j.get("state"), done, len(j.get("patches", [])))))
-    if not bad:
-        ok("هیچ Journal ناتمامی پیدا نشد.")
-        return EXIT_OK
-    warn("Journalهای ناتمام:")
-    for p, why in bad:
-        out("   %s  (%s)" % (p, why))
-    info("برای بررسی: --inspect <path>   برای برگشت: --undo <path>")
-    return EXIT_OK
+            doc = core.inspect_transaction(backup_dir, name)
+            out(name + " " + doc["state"])
+            interrupted = interrupted or doc["interrupted"]
+        except (core.SafetyError, OSError, ValueError) as e:
+            err(name + ": " + str(e))
+            interrupted = True
+    return EXIT_ERR if interrupted else EXIT_OK
 
 
 def dump_structures(disk, backup_dir, tag="pre"):
     """Save the first and last 34 sectors before any structural change."""
     os.makedirs(backup_dir, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = str(uuid.uuid4())
     base = os.path.join(backup_dir, "struct_%s_%s" % (tag, ts))
     head = disk.read_at(0, 34 * disk.sector)
     tail_off = max(0, disk.size - 34 * disk.sector)
     tail = disk.read_at(tail_off, 34 * disk.sector)
     for suffix, data in (("_head.bin", head), ("_tail.bin", tail)):
-        with open(base + suffix, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
+        core.durable_create(base + suffix, data)
     _atomic_write_json(base + "_meta.json", {
         "head_offset": 0, "tail_offset": tail_off, "sector": disk.sector,
         "target": disk.path,
@@ -4505,6 +4419,11 @@ class Blocked(Exception):
 class RepairAction(object):
     def __init__(self, key, title, patches, gate, note="", post=(), notes=()):
         self.key = key
+        self.write_class = safety.classify(key)
+        self.source_fingerprint = None
+        self.provenance = None
+        self.structural_oracle = None
+        self.semantic_oracle = None
         self.title = title
         self.patches = patches
         self.gate = gate
@@ -4516,6 +4435,7 @@ class RepairAction(object):
 # --- GPT: byte-for-byte restores ---------------------------------------------
 
 def act_gpt_restore_primary(disk, r, args):
+    safety.redundant_conflicts(sys.modules[__name__], r, "gpt-restore-primary")
     src = r.gpt_b
     if not (src and src["present"]):
         raise Blocked("gpt-restore-primary", "هیچ GPT پشتیبانی در انتهای دیسک نیست")
@@ -4551,6 +4471,7 @@ def act_gpt_restore_primary(disk, r, args):
 
 
 def act_gpt_restore_backup(disk, r, args):
+    safety.redundant_conflicts(sys.modules[__name__], r, "gpt-restore-backup")
     src = r.gpt_p
     if not (src and src["present"]):
         raise Blocked("gpt-restore-backup", "GPT اصلی وجود ندارد")
@@ -4586,6 +4507,7 @@ def act_gpt_restore_backup(disk, r, args):
 
 def act_gpt_fix_crc(disk, r, args):
     """Correct ONLY the two CRC fields, on the existing on-disk header bytes."""
+    safety.proven_crc(sys.modules[__name__], r)
     targets = []
     for g, side, lba in ((r.gpt_p, "primary", 1),
                          (r.gpt_b, "backup", disk.sectors - 1)):
@@ -4620,6 +4542,7 @@ def act_gpt_fix_crc(disk, r, args):
 
 def act_gpt_fix_geometry(disk, r, args):
     """Re-anchor a GPT whose stored geometry disagrees with the real disk."""
+    safety.geometry_provenance(sys.modules[__name__], disk, r, args)
     src = r.gpt_p if (r.gpt_p and r.gpt_p["present"] and r.gpt_p["entries"]) else r.gpt_b
     if not (src and src["present"] and src["entries"]):
         raise Blocked("gpt-fix-geometry", "هیچ هدر GPT قابل استفاده‌ای نیست")
@@ -4667,6 +4590,9 @@ def act_mbr_protective(disk, r, args):
     old = disk.read_lba(0, 1)
     boot = old if (r.mbr and r.mbr["bootcode_nonzero"]) else b""
     sec = build_protective_mbr(disk.sectors, boot)
+    sec = bytearray(sec)
+    sec[0x1B8:0x1BE] = old[0x1B8:0x1BE]
+    sec = bytes(sec)
     return RepairAction(
         "mbr-write-protective", "نوشتن Protective MBR روی سکتور 0",
         [Patch(0, sec, "protective MBR (LBA 0)")], GATE_SAFE,
@@ -4735,7 +4661,7 @@ def act_mbr_rebuild(disk, r, args):
     for i, p in enumerate(parts):
         sec[0x1BE + i * 16:0x1BE + (i + 1) * 16] = build_mbr_entry(
             FS_TO_MBR_TYPE[p.fs_name()], p.start, min(p.sectors, 0xFFFFFFFF),
-            bootable=(i == 0))
+            bootable=False)
     sec[510:512] = b"\x55\xAA"
     desc = ", ".join("%s@%d(%s)" % (p.fs_name(), p.start,
                                     p.ev.extent_source.split()[0]) for p in parts)
@@ -4750,54 +4676,10 @@ def act_mbr_rebuild(disk, r, args):
 
 
 def act_gpt_rebuild(disk, r, args):
-    parts = _rebuild_preconditions(disk, r, "gpt-rebuild")
-    unknown = [p for p in parts if p.fs_name() not in FS_TO_GPT_GUID]
-    if unknown:
-        raise Blocked("gpt-rebuild",
-                      ["فایل‌سیستم پارتیشن #%d (%s) شناخته‌شده نیست؛ Type GUID "
-                       "حدس زده نمی‌شود" % (p.num, p.fs_name()) for p in unknown])
-    entries = []
-    for i, p in enumerate(parts):
-        g = FS_TO_GPT_GUID[p.fs_name()]
-        if p.fs_name() in ("FAT32", "FAT16") and i == 0 and \
-                p.sectors * disk.sector <= 2 * GIB and \
-                p.start <= (8 * MIB) // disk.sector:
-            g = GUID_ESP
-        entries.append({"first": p.start, "last": p.end, "type_guid": g,
-                        "part_guid": p.guid or None,
-                        "name": p.name or (p.fs_name() + " volume"), "attrs": 0})
-    dg = None
-    for src in (r.gpt_p, r.gpt_b):
-        if src and src.get("header") and src["header"].get("disk_guid") not in (
-                None, "", "00000000-0000-0000-0000-000000000000"):
-            dg = src["header"]["disk_guid"]
-            break
-    notes = ["#%d %s LBA %d..%d — extent proof: %s"
-             % (p.num, p.fs_name(), p.start, p.end, p.ev.extent_source) for p in parts]
-    if dg is None:
-        notes.append("Disk GUID قابل استخراج نبود؛ یک GUID جدید تولید می‌شود. "
-                     "این آخرین چاره است، نه رفتار عادی.")
-    for p in parts:
-        if not p.guid:
-            notes.append("#%d: GUID یکتای پارتیشن قابل بازیابی نبود؛ جدید تولید "
-                         "می‌شود (روی داده اثر ندارد، ولی شناسه قبلی از دست می‌رود)."
-                         % p.num)
-    built = build_gpt(disk.sectors, disk.sector, entries, disk_guid=dg)
-    patches = [Patch(0, build_protective_mbr(disk.sectors), "protective MBR (LBA 0)"),
-               Patch(built["primary_entries_lba"] * disk.sector, built["primary_entries"],
-                     "GPT primary entry array"),
-               Patch(built["primary_header_lba"] * disk.sector, built["primary_header"],
-                     "GPT primary header"),
-               Patch(built["backup_entries_lba"] * disk.sector, built["backup_entries"],
-                     "GPT backup entry array"),
-               Patch(built["backup_header_lba"] * disk.sector, built["backup_header"],
-                     "GPT backup header")]
-    desc = ", ".join("%s@%d" % (p.fs_name(), p.start) for p in parts)
-    return RepairAction(
-        "gpt-rebuild", "ساخت کامل GPT از %d کاندید strong: %s" % (len(parts), desc),
-        patches, GATE_INFERRED,
-        note="Protective MBR + GPT اصلی + GPT پشتیبان نوشته می‌شود.",
-        post=["rescan"], notes=notes)
+    # Preserve discovery/evidence; refuse to synthesize historical GUIDs,
+    # attributes, names or EFI roles. Operator identity import is not supported.
+    _rebuild_preconditions(disk, r, "gpt-rebuild")
+    raise Blocked("gpt-rebuild", "BLOCKED_INSUFFICIENT_EVIDENCE: exact historical GPT identity is UNKNOWN")
 
 
 # --- VBR restore --------------------------------------------------------------
@@ -4943,64 +4825,7 @@ def act_vbr_restore(disk, r, args, reverse=False):
 
 
 def act_parttype_fix(disk, r, args):
-    if r.scheme.startswith("MBR"):
-        old = disk.read_lba(0, 1)
-        if len(old) < 512:
-            raise Blocked("parttype-fix", "سکتور 0 خوانده نشد")
-        sec = bytearray(old)
-        changed = []
-        for p in r.parts:
-            if p.slot is None or p.source != "MBR" or not p.fs:
-                continue
-            if p.ev and p.ev.level in ("weak", "blocked"):
-                continue
-            want = FS_TO_MBR_TYPE.get(p.fs_name())
-            if want is None:
-                continue
-            off = 0x1BE + p.slot * 16 + 4
-            if sec[off] != want:
-                changed.append("slot %d: 0x%02X -> 0x%02X (%s)"
-                               % (p.slot, sec[off], want, p.fs_name()))
-                sec[off] = want
-        if not changed:
-            raise Blocked("parttype-fix",
-                          "همه نوع‌های پارتیشن با فایل‌سیستم واقعی می‌خوانند "
-                          "(یا شواهد کافی برای تغییر نیست)")
-        return RepairAction("parttype-fix", "اصلاح نوع پارتیشن MBR: " + "; ".join(changed),
-                            [Patch(0, bytes(sec), "MBR type bytes (LBA 0)")],
-                            GATE_SAFE, post=["rescan"])
-
-    src = r.gpt_p if (r.gpt_p and r.gpt_p["entries"]) else r.gpt_b
-    if not (src and src["entries"] and src["valid"]):
-        raise Blocked("parttype-fix", "جدول GPT معتبری برای اصلاح نیست")
-    esz = src["header"]["entry_size"]
-    elba = src["header"]["entry_lba"]
-    arr = bytearray(src["entry_bytes"])
-    changed = []
-    for p in r.parts:
-        if not p.fs or p.slot is None:
-            continue
-        if p.ev and p.ev.level in ("weak", "blocked"):
-            continue
-        want = FS_TO_GPT_GUID.get(p.fs_name())
-        if not want:
-            continue
-        off = p.slot * esz
-        cur = guid_to_str(bytes(arr[off:off + 16]))
-        if cur.upper() != want:
-            arr[off:off + 16] = str_to_guid(want)
-            changed.append("#%d: %s -> %s" % (p.num, cur, want))
-    if not changed:
-        raise Blocked("parttype-fix", "همه Type GUIDها درست‌اند")
-    # only the entry array bytes change; the header keeps everything but its CRCs
-    new_hdr = gpt_recrc_header(src["header_sector"], disk.sector, bytes(arr))
-    patches = [Patch(elba * disk.sector, bytes(arr), "GPT entry array (type GUIDs only)"),
-               Patch(src["header_lba"] * disk.sector, new_hdr,
-                     "GPT header CRC fields")]
-    return RepairAction("parttype-fix", "اصلاح Type GUID: " + "; ".join(changed),
-                        patches, GATE_SAFE,
-                        note="فقط 16 بایت Type GUID هر ورودی و CRCهای هدر عوض می‌شود.",
-                        post=["rescan"])
+    raise Blocked("parttype-fix", "BLOCKED_INSUFFICIENT_EVIDENCE: filesystem appearance does not prove partition semantic identity")
 
 
 def _find_part(r, num):
@@ -5139,24 +4964,20 @@ def print_plans(disk, r, plans):
 
 
 def probe_gate(disk, r, action, part=None):
-    """What would the gate say about this action right now?"""
     if action in EXTERNAL_ACTIONS:
-        return GATE_SAFE
+        return GATE_BLOCKED if action == "chkdsk" else GATE_SAFE
     builder = ACTION_BUILDERS.get(action)
     if not builder:
         return GATE_BLOCKED
-    fake = argparse.Namespace(part=part)
     try:
-        act = builder(disk, r, fake)
-    except Blocked:
-        return GATE_BLOCKED
-    except Exception:
-        return GATE_BLOCKED
-    exempt = BLOCKER_EXEMPT.get(action, ())
-    for k, _ in r.blockers:
-        if k not in exempt:
+        act = builder(disk, r, argparse.Namespace(part=part))
+        if act.write_class not in core.ELIGIBLE:
             return GATE_BLOCKED
-    return act.gate
+        if any(k not in BLOCKER_EXEMPT.get(action, ()) for k, _ in r.blockers):
+            return GATE_BLOCKED
+        return act.gate
+    except (Blocked, core.SafetyError):
+        return GATE_BLOCKED
 
 
 # =============================================================================
@@ -5178,61 +4999,10 @@ def _fill_block(kind, n):
     return (unit * ((n // len(unit)) + 1))[:n]
 
 
-def make_image(disk, path, limit=0, chunk=8 * MIB, retries=3, fill="zero"):
-    """Raw image with retries and an explicit bad-sector map."""
-    total = disk.size if not limit else min(disk.size, limit)
-    sec = disk.sector
-    bad_ranges = []
-    done = 0
-    bad_bytes = 0
-    t0 = time.time()
-    with open(path, "wb") as f:
-        while done < total:
-            n = min(chunk, total - done)
-            data = _read_retry(disk, done, n, retries)
-            if data is not None and len(data) == n:
-                f.write(data)
-                done += n
-                _img_progress(done, total, bad_bytes)
-                continue
-            # descend to sector level inside the failing chunk
-            for off in range(done, done + n, sec):
-                m = min(sec, total - off)
-                d = _read_retry(disk, off, m, retries)
-                if d is not None and len(d) == m:
-                    f.write(d)
-                else:
-                    f.write(_fill_block(fill, m))
-                    bad_bytes += m
-                    if bad_ranges and bad_ranges[-1]["end"] == off:
-                        bad_ranges[-1]["end"] = off + m
-                        bad_ranges[-1]["sectors"] += 1
-                    else:
-                        bad_ranges.append({"start": off, "end": off + m,
-                                           "start_lba": off // sec, "sectors": 1})
-            done += n
-            _img_progress(done, total, bad_bytes)
-    if not QUIET:
-        sys.stdout.write("\r" + " " * 72 + "\r")
-    badmap = {
-        "tool": "DiskDoctor", "version": VERSION,
-        "time": datetime.datetime.now().isoformat(timespec="seconds"),
-        "source": disk.path, "image": path, "sector_size": sec,
-        "imaged_bytes": done, "unreadable_bytes": bad_bytes,
-        "fill_pattern": fill, "retries_per_sector": retries,
-        "bad_ranges": bad_ranges,
-    }
-    _atomic_write_json(path + ".badmap.json", badmap)
-    if bad_bytes:
-        warn("%s غیرقابل خواندن بود در %d محدوده — با الگوی '%s' پر شد و در "
-             "%s.badmap.json ثبت شد." % (human(bad_bytes), len(bad_ranges), fill, path))
-        for br in bad_ranges[:5]:
-            out("     bad: LBA %d .. %d (%d sectors)"
-                % (br["start_lba"], br["start_lba"] + br["sectors"] - 1, br["sectors"]))
-        if len(bad_ranges) > 5:
-            out("     ... %d more ranges" % (len(bad_ranges) - 5))
-    ok("image written: %s (%s in %.1fs)" % (path, human(done), time.time() - t0))
-    return path, badmap
+def make_image(disk, path, limit=0, chunk=8 * MIB, retries=3, fill="pat",
+               resume=False, final_hash=False):
+    return imaging.make_image(sys.modules[__name__], disk, path, limit, chunk,
+                              retries, fill, resume, final_hash)
 
 
 def _read_retry(disk, off, n, retries):
@@ -5276,9 +5046,11 @@ def win_set_offline(index, offline=True):
     if rc != 0:
         script = "select disk %d\r\n%s\r\nexit\r\n" % (
             index, "offline disk" if offline else "online disk")
-        f = os.path.join(tempfile.gettempdir(), "dd_diskpart.txt")
-        with open(f, "w") as fh:
+        with tempfile.NamedTemporaryFile(mode="w", prefix="dd_diskpart_", suffix=".txt", delete=False) as fh:
+            f = fh.name
             fh.write(script)
+            fh.flush()
+            os.fsync(fh.fileno())
         rc2, so2, se2 = run_cmd(["diskpart", "/s", f])
         return rc2 == 0
     return True
@@ -5297,9 +5069,11 @@ def win_rescan():
         return False
     rc, _, _ = ps("Update-HostStorageCache")
     if rc != 0:
-        f = os.path.join(tempfile.gettempdir(), "dd_rescan.txt")
-        with open(f, "w") as fh:
+        with tempfile.NamedTemporaryFile(mode="w", prefix="dd_rescan_", suffix=".txt", delete=False) as fh:
+            f = fh.name
             fh.write("rescan\r\nexit\r\n")
+            fh.flush()
+            os.fsync(fh.fileno())
         rc, _, _ = run_cmd(["diskpart", "/s", f])
     return rc == 0
 
@@ -5337,17 +5111,13 @@ def win_close_handle(h):
 
 
 def run_chkdsk(letter, fix=True):
-    if not IS_WIN:
-        warn("chkdsk فقط روی ویندوز معنا دارد.")
-        return 1
-    args = ["chkdsk", "%s:" % letter.rstrip(":")]
     if fix:
-        args.append("/f")
-    info("running: %s" % " ".join(args))
-    rc, so, se = run_cmd(args, timeout=3600)
-    out(so[-4000:])
-    if se.strip():
-        warn(se[-1000:])
+        raise DiskError("Source mutation must go through the audited external-action gate")
+    if not IS_WIN or not re.fullmatch(r"[A-Za-z]:?", letter):
+        return EXIT_ARG
+    rc, so, se = run_cmd(["chkdsk", letter.rstrip(":") + ":"], timeout=3600)
+    out(so)
+    out(se)
     return rc
 
 
@@ -5401,7 +5171,12 @@ def run_refsutil(letter, work_dir, target_dir, mode="-QA"):
         warn("refsutil فقط روی ویندوز موجود است.")
         return 1
     vol = "%s:" % letter.rstrip(":")
+    if not re.fullmatch(r"[A-Za-z]:?", letter):
+        raise DiskError("invalid source drive letter")
+    source_volume = safety.volume_identity(vol + "\\")
     for d in (work_dir, target_dir):
+        if safety.volume_identity(d) == source_volume:
+            raise DiskError("working/destination volume aliases the source")
         os.makedirs(d, exist_ok=True)
         if os.path.splitdrive(os.path.abspath(d))[0].upper() == vol.upper():
             err("پوشه کاری/مقصد نباید روی همان ولوم آسیب‌دیده باشد: %s" % d)
@@ -5463,23 +5238,12 @@ def confirm(prompt=None, assume_yes=False):
 
 
 def privilege_gate(disk, args):
-    problems = []
-    idx = win_disk_index_from_path(disk.path)
-    if IS_WIN and idx is not None and idx in system_disk_indices():
-        problems.append(T("sys_disk_block"))
-    if IS_LINUX and disk.is_device:
-        for s in system_disk_indices():
-            if isinstance(s, str) and disk.path.startswith(s):
-                problems.append(T("sys_disk_block"))
-    if not is_admin() and disk.is_device:
-        problems.append(T("need_admin"))
-    if problems and not args.force:
-        for p in problems:
-            err(p)
+    try:
+        safety.absolute_guard(sys.modules[__name__], disk)
+        return True
+    except core.SafetyError as e:
+        err(str(e))
         return False
-    for p in problems:
-        warn("FORCED: " + p)
-    return True
 
 
 def print_blocked(action, reasons):
@@ -5492,160 +5256,11 @@ def print_blocked(action, reasons):
 
 
 def execute_action(disk, r, args, action_key):
-    if action_key in EXTERNAL_ACTIONS:
-        return run_external(disk, r, args, action_key)
-    builder = ACTION_BUILDERS.get(action_key)
-    if not builder:
-        err("unknown action: %s" % action_key)
-        return EXIT_ARG
-
-    # --- build (the builder itself refuses when evidence is insufficient) ---
-    try:
-        act = builder(disk, r, args)
-    except Blocked as b:
-        print_blocked(b.action, b.reasons)
-        return EXIT_BLOCKED
-    except DiskError as e:
-        err("cannot build action %s: %s" % (action_key, e))
-        return EXIT_ERR
-
-    # --- disk-level blockers ------------------------------------------------
-    exempt = BLOCKER_EXEMPT.get(action_key, ())
-    active = [(k, w) for k, w in r.blockers if k not in exempt]
-    if active and not args.force:
-        print_blocked(action_key, ["[%s] %s" % (k, w) for k, w in active] +
-                      ["blockerهای سراسری دیسک اجازه هیچ نوشتنی نمی‌دهند "
-                       "(عبور فقط با --force و با پذیرش کامل ریسک)"])
-        return EXIT_BLOCKED
-    for k, w in active:
-        warn("FORCED past disk blocker [%s]: %s" % (k, w))
-
-    out("")
-    out(C.w(C.BOLD, " ACTION: %s   %s" % (
-        act.key, C.w(GATE_LABEL.get(act.gate, C.GREY), "[%s]" % act.gate))))
-    out("   %s" % act.title)
-    if act.note:
-        out("   note : %s" % act.note)
-    for n in act.notes:
-        out("   %s %s" % (C.w(C.GREY, "-"), n))
-
-    total = preview_patches(disk, act.patches)
-    if total == 0:
-        info("هیچ تغییری لازم نیست؛ محتوای فعلی همان چیزی است که باید باشد.")
-        return EXIT_OK
-    if not args.apply:
-        warn(T("no_write_wo_apply"))
-        if act.gate == GATE_INFERRED:
-            info("این اقدام ساختار را سنتز می‌کند؛ برای اجرا هم --apply لازم است "
-                 "هم --allow-inferred.")
-        return EXIT_OK
-
-    # --- gate enforcement ---------------------------------------------------
-    if act.gate == GATE_INFERRED and not args.allow_inferred and not args.force:
-        print_blocked(action_key, [T("need_inferred")])
-        return EXIT_BLOCKED
-    if not privilege_gate(disk, args):
-        return EXIT_PERM
-
-    warn("قبل از نوشتن: ایمیج داری؟ اگر نه، Ctrl+C بزن و اول --image-out بگیر.")
-    if not confirm(assume_yes=args.yes):
-        out(T("cancelled"))
-        return EXIT_CANCEL
-
-    base = dump_structures(disk, args.backup_dir, "pre")
-    info("ساختارهای فعلی ذخیره شد: %s_{head,tail}.bin" % base)
-
-    idx = win_disk_index_from_path(disk.path)
-    went_offline = False
-    vol_handles = []
-    if IS_WIN and idx is not None:
-        if args.offline:
-            info("taking disk %d offline ..." % idx)
-            win_set_readonly(idx, False)
-            went_offline = win_set_offline(idx, True)
-            if not went_offline:
-                warn("offline نشد؛ نوشتن ممکن است رد شود.")
-        elif act.key.startswith("vbr-restore"):
-            for v in _win_disk_volumes(idx):
-                if v.get("Letter"):
-                    h = win_lock_dismount(str(v["Letter"]))
-                    if h:
-                        vol_handles.append(h)
-                        info("volume %s: locked + dismounted" % v["Letter"])
-                    else:
-                        warn("قفل کردن ولوم %s ناموفق بود؛ با --offline دوباره "
-                             "اجرا کن." % v["Letter"])
-
-    tx = PatchTransaction(disk, act.key, act.patches, args.backup_dir,
-                          meta={"title": act.title, "gate": act.gate,
-                                "struct_backup": base, "notes": act.notes})
-    rc = EXIT_OK
-    try:
-        jp = tx.begin()          # journal on stable storage BEFORE any write
-        ok("%s (pre-write): %s" % (T("journal_saved"), jp))
-        disk.reopen(writable=True)
-        written = tx.run(force=args.force)
-        ok("%s: %s (%d bytes)" % (T("applied"), act.key, written))
-        info("برگرداندن: python %s --undo \"%s\"" %
-             (os.path.basename(sys.argv[0]), jp))
-    except DiskError as e:
-        err(str(e))
-        err("Journal با وضعیت '%s' ذخیره شد: %s" % (tx.state, tx.path))
-        err("برای برگرداندن همان بخشی که نوشته شد: --undo \"%s\"" % tx.path)
-        rc = EXIT_ERR
-    finally:
-        for h in vol_handles:
-            win_close_handle(h)
-        if went_offline:
-            info("bringing disk %d back online ..." % idx)
-            try:
-                win_set_offline(idx, False)
-            except Exception as e:
-                warn("online کردن ناموفق بود: %s — دستی Online کن." % e)
-        try:
-            disk.reopen(writable=False)
-        except DiskError as e:
-            warn("بازکردن مجدد فقط-خواندن ناموفق بود: %s" % e)
-
-    if rc == EXIT_OK:
-        for step in act.post:
-            if step == "rescan" and IS_WIN:
-                win_rescan()
-                ok("Windows rescan issued.")
-            elif step == "chkdsk":
-                info("گام بعدی پیشنهادی: chkdsk X: /f پس از اینکه ویندوز حرف "
-                     "درایو داد.")
-        info("اسکن مجدد برای تایید نتیجه ...")
-        print_report(scan(disk))
-    return rc
+    return safety.execute(sys.modules[__name__], disk, r, args, action_key)
 
 
 def run_external(disk, r, args, key):
-    idx = win_disk_index_from_path(disk.path)
-    if key == "rescan":
-        return EXIT_OK if win_rescan() else EXIT_ERR
-    letter = args.letter
-    if not letter and IS_WIN and idx is not None:
-        letters = [v.get("Letter") for v in _win_disk_volumes(idx) if v.get("Letter")]
-        if len(letters) == 1:
-            letter = letters[0]
-        elif letters:
-            info("حرف درایوهای این دیسک: %s — با --letter انتخاب کن." % ", ".join(letters))
-            return EXIT_ARG
-    if not letter:
-        err("این اقدام به حرف درایو نیاز دارد: --letter E")
-        return EXIT_ARG
-    if key == "chkdsk":
-        if not args.apply:
-            warn("chkdsk /f روی ولوم می‌نویسد. با --apply اجرا کن.")
-            return EXIT_OK
-        return EXIT_OK if run_chkdsk(letter, fix=True) == 0 else EXIT_ERR
-    if key == "refsutil":
-        work = args.refs_work or os.path.join(args.backup_dir, "refs_work")
-        tgt = args.refs_out or os.path.join(args.backup_dir, "refs_salvage")
-        mode = "-" + (args.refs_mode or "QA").upper().lstrip("-")
-        return EXIT_OK if run_refsutil(letter, work, tgt, mode) == 0 else EXIT_ERR
-    return EXIT_ARG
+    return safety.external(sys.modules[__name__], disk, r, args, key)
 
 
 # =============================================================================
@@ -6091,1523 +5706,11 @@ def _build(path, action_key, part=None):
 
 
 def self_test():
-    global QUIET, EXPLAIN
-    prev_q, prev_e = QUIET, EXPLAIN
-    QUIET, EXPLAIN = True, False
-    tmp = tempfile.mkdtemp(prefix="diskdoctor11_")
-    results = []
-
-    def check(name, cond, extra=""):
-        results.append((name, bool(cond)))
-        tag = "\033[32mPASS\033[0m" if cond else "\033[31mFAIL\033[0m"
-        print("  [%s] %s%s" % (tag, name, ("  -- %s" % (extra,)) if extra and not cond else ""))
-        return bool(cond)
-
-    print("DiskDoctor %s self-test" % VERSION)
-    print("workdir: %s\n" % tmp)
-
-    # ================================================================== T1 ==
-    # FAT32: the parser must read BPB_BkBootSec from 0x32, not 0x34
-    p = os.path.join(tmp, "fat32_bk17.img")
-    img = _Img(p, 64 * MIB)
-    _put_fat32(img, 2048, 40960)
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x0C, 2048, 40960, True)
-    m[510:512] = b"\x55\xAA"
-    img.put(0, bytes(m))
-    fs = probe_fs(img.read(2048, 8), 512)
-    check("T1 FAT32 detected", fs and fs["fs"] == "FAT32", fs)
-    check("T1 BkBootSec read from 0x32 (=17, not the 6 decoy at 0x34)",
-          fs["fields"]["bk_boot_sec"] == TEST_FAT32_BKBOOT,
-          fs["fields"].get("bk_boot_sec"))
-    check("T1 FSInfo read from 0x30 (=1)", fs["fields"]["fs_info"] == TEST_FAT32_FSINFO,
-          fs["fields"].get("fs_info"))
-    d, r = _scan_file(p)
-    ev = r.parts[0].ev
-    check("T1 mirror found at start+17", ev.signals["mirror_signature"]["value"],
-          ev.signals["mirror_signature"]["why"])
-    check("T1 mirror BPB matches", ev.signals["mirror_bpb_match"]["value"])
-    check("T1 hidden_sectors signal passes", ev.signals["hidden_sectors"]["value"])
-    check("T1 evidence level strong", r.parts[0].level == "strong",
-          (r.parts[0].level, ev.confidence, ev.extent_source))
-    d.close()
-
-    # ================================================================== T2 ==
-    # exFAT VBR checksum is really verified, and a single flipped byte fails it
-    p2 = os.path.join(tmp, "exfat.img")
-    img2 = _Img(p2, 64 * MIB)
-    _put_exfat(img2, 2048, 40960)
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x07, 2048, 40960, True)
-    m[510:512] = b"\x55\xAA"
-    img2.put(0, bytes(m))
-    d, r = _scan_file(p2)
-    ev = r.parts[0].ev
-    check("T2 exFAT checksum verified", ev.signals["exfat_checksum"]["value"],
-          ev.signals["exfat_checksum"]["why"])
-    check("T2 PartitionOffset matches start", ev.signals["partition_offset"]["value"])
-    check("T2 extent proven by checksum+offset",
-          ev.extent_source and "checksum" in ev.extent_source, ev.extent_source)
-    check("T2 exFAT level strong", r.parts[0].level == "strong", r.parts[0].level)
-    d.close()
-    sec5 = bytearray(img2.read(2048 + 5, 1))
-    sec5[100] ^= 0xFF                       # flip a byte the checksum covers
-    img2.put(2048 + 5, bytes(sec5))
-    d, r = _scan_file(p2)
-    ev = r.parts[0].ev
-    check("T2b corrupted VBR fails the checksum",
-          ev.signals["exfat_checksum"]["value"] is False)
-    check("T2b extent no longer proven by checksum",
-          not (ev.extent_source or "").startswith("exFAT"), ev.extent_source)
-    d.close()
-
-    # ================================================================== T3 ==
-    # NTFS mirror position: right distance = proof, wrong distance = no proof
-    p3 = os.path.join(tmp, "ntfs_ok.img")
-    img3 = _Img(p3, 64 * MIB)
-    _put_ntfs(img3, 2048, 40960)
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x07, 2048, 40960, True)
-    m[510:512] = b"\x55\xAA"
-    img3.put(0, bytes(m))
-    d, r = _scan_file(p3)
-    ev = r.parts[0].ev
-    check("T3 NTFS mirror position proves the extent",
-          ev.signals["mirror_position"]["value"] and
-          "backup boot sector" in (ev.extent_source or ""), ev.extent_source)
-    check("T3 NTFS level strong", r.parts[0].level == "strong", r.parts[0].level)
-    d.close()
-
-    p3b = os.path.join(tmp, "ntfs_wrong_span.img")
-    img3b = _Img(p3b, 64 * MIB)
-    vbr = _mk_ntfs_vbr(40960, hidden=2048)
-    img3b.put(2048, vbr)
-    img3b.put(2048 + 30000, vbr)            # mirror at the WRONG distance
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x07, 2048, 30001, True)
-    m[510:512] = b"\x55\xAA"
-    img3b.put(0, bytes(m))
-    d, r = _scan_file(p3b)
-    ev = r.parts[0].ev
-    check("T3b mirror at the wrong distance is not accepted",
-          ev.signals["mirror_position"]["value"] is False,
-          ev.signals["mirror_position"]["why"])
-    check("T3b extent conflict is a blocker",
-          any(k == "extent_conflict" for k, _ in ev.blockers),
-          [k for k, _ in ev.blockers])
-    d.close()
-
-    # ================================================================== T4 ==
-    # A lone mirror must not become a ghost partition
-    p4 = os.path.join(tmp, "lone_mirror.img")
-    img4 = _Img(p4, 64 * MIB)
-    _put_ntfs(img4, 2048, 40960)
-    img4.zero(2048)                         # destroy the primary VBR only
-    img4.zero(0, 1)                         # and the partition table
-    d, r = _scan_file(p4, deep=True)
-    ghosts = [c for c in r.carved if c.start == 2048 + 40960 - 1]
-    check("T4 the surviving mirror is seen", len(ghosts) == 1,
-          [c.start for c in r.carved])
-    if ghosts:
-        check("T4 it is flagged as a mirror copy, not a volume start",
-              any(k == "is_mirror_copy" for k, _ in ghosts[0].ev.blockers),
-              [k for k, _ in ghosts[0].ev.blockers])
-        check("T4 it can never enter a rebuild",
-              ghosts[0] not in strong_candidates(r))
-    d.close()
-
-    # ================================================================= T4b ==
-    # Ghost-partition regression: a lone mirror next to a healthy volume must
-    # not turn into a second partition in a rebuild.
-    p4b = os.path.join(tmp, "ghost.img")
-    img4b = _Img(p4b, 128 * MIB)
-    _put_ntfs(img4b, 2048, 40960)            # healthy volume
-    _put_exfat(img4b, 65536, 40960)          # second healthy volume
-    img4b.zero(65536)                        # kill only the exFAT primary VBR
-    img4b.zero(0, 1)
-    d, r = _scan_file(p4b, deep=True)
-    ghost = [c for c in r.carved if c.start == 65536 + 12]
-    check("T4b the orphan exFAT mirror is visible", len(ghost) == 1,
-          [c.start for c in r.carved])
-    if ghost:
-        check("T4b it is identified as a mirror by its PartitionOffset",
-              any(k == "is_mirror_copy" for k, _ in ghost[0].ev.blockers),
-              [k for k, _ in ghost[0].ev.blockers])
-    strong4b = strong_candidates(r)
-    check("T4b only the healthy NTFS volume is strong",
-          [c.start for c in strong4b] == [2048], [c.start for c in strong4b])
-    d.close()
-    act, reasons = _build(p4b, "mbr-rebuild")
-    check("T4b rebuild refuses while an unproven candidate is present",
-          act is None, "built anyway")
-
-    # ================================================================== T5 ==
-    # GPT byte-for-byte restore keeps non-standard metadata intact
-    p5 = os.path.join(tmp, "gpt_es256.img")
-    img5 = _Img(p5, 256 * MIB)
-    tot5 = (256 * MIB) // 512
-    _put_ntfs(img5, 2048, 204800)
-    _put_fat32(img5, 262144, 100000)
-    ents = [{"first": 2048, "last": 2048 + 204800 - 1, "type_guid": GUID_MSDATA,
-             "name": "data one"},
-            {"first": 262144, "last": 262144 + 100000 - 1, "type_guid": GUID_MSDATA,
-             "name": "data two"}]
-    b5 = build_gpt(tot5, 512, ents, disk_guid="AABBCCDD-1122-3344-5566-778899AABBCC")
-    # make the primary header non-standard on purpose: entry_size 256 and a
-    # non-zero reserved dword, so a regenerating "fix" would be detectable
-    hdr = bytearray(b5["primary_header"])
-    struct.pack_into("<I", hdr, 20, 0xDEADBEEF)     # reserved field
-    struct.pack_into("<I", hdr, 16, 0)
-    struct.pack_into("<I", hdr, 16, crc32(bytes(hdr[:92])))
-    img5.put(0, build_protective_mbr(tot5))
-    img5.put(1, bytes(hdr))
-    img5.put(2, b5["primary_entries"])
-    img5.put(b5["backup_entries_lba"], b5["backup_entries"])
-    bak = bytearray(b5["backup_header"])
-    struct.pack_into("<I", bak, 20, 0xDEADBEEF)
-    struct.pack_into("<I", bak, 16, 0)
-    struct.pack_into("<I", bak, 16, crc32(bytes(bak[:92])))
-    img5.put(b5["backup_header_lba"], bytes(bak))
-    d, r = _scan_file(p5)
-    check("T5 GPT with a non-zero reserved dword parses", r.gpt_p["valid"], r.gpt_p["errors"])
-    d.close()
-    sha_pristine = img5.sha()
-    img5.zero(1, 33)                        # destroy the primary GPT
-    rc, jp = _apply(p5, "gpt-restore-primary")
-    check("T5 restore-primary applied", rc == EXIT_OK, rc)
-    check("T5 disk is byte-identical to the pristine image",
-          img5.sha() == sha_pristine)
-    restored = img5.read(1, 1)
-    check("T5 reserved dword preserved verbatim",
-          u32(restored, 20) == 0xDEADBEEF, hex(u32(restored, 20)))
-    check("T5 header size / revision preserved",
-          u32(restored, 12) == 92 and u32(restored, 8) == 0x00010000)
-
-    # ================================================================== T6 ==
-    # gpt-fix-crc touches one sector only, and refuses on implausible entries
-    img5.put(1, bytes(bytearray(img5.read(1, 1))[:16] + b"\x00\x00\x00\x00" +
-                      bytes(bytearray(img5.read(1, 1))[20:])))   # break header CRC
-    act, reasons = _build(p5, "gpt-fix-crc")
-    check("T6 gpt-fix-crc builds", act is not None, reasons)
-    if act:
-        check("T6 it patches exactly one sector", len(act.patches) == 1
-              and len(act.patches[0].new) == 512, len(act.patches))
-        check("T6 it is classified SAFE_RESTORE", act.gate == GATE_SAFE)
-    rc, _ = _apply(p5, "gpt-fix-crc")
-    d, r = _scan_file(p5)
-    check("T6 header CRC repaired", r.gpt_p["valid"], r.gpt_p["errors"])
-    check("T6 entry array untouched", img5.read(2, 32) == b5["primary_entries"])
-    d.close()
-    # now corrupt an entry so the array becomes implausible, and try again
-    arr = bytearray(img5.read(2, 32))
-    struct.pack_into("<Q", arr, 40, tot5 + 999999)   # entry ends past the disk
-    img5.put(2, bytes(arr))
-    act, reasons = _build(p5, "gpt-fix-crc")
-    check("T6b refuses to bless an implausible entry array", act is None,
-          "action was built anyway")
-    check("T6b reason mentions the entry array",
-          bool(reasons) and any("منطقی نیست" in x for x in reasons), reasons)
-
-    # ================================================================== T7 ==
-    # Journal is written BEFORE the first byte, and a partial run is undoable
-    p7 = os.path.join(tmp, "tx.img")
-    img7 = _Img(p7, 16 * MIB)
-    bk = tempfile.mkdtemp(prefix="ddtx_")
-    d = RawDisk(p7, writable=False)
-    pa = Patch(0, b"\xA1" * 512, "first")
-    pb = Patch(4096, b"\xB2" * 512, "second")
-    pb.old = b"\xEE" * 512                   # deliberately stale -> must abort
-    tx = PatchTransaction(d, "unit-test", [pa, pb], bk)
-    jpath = tx.begin()
-    j0 = load_journal(jpath)
-    check("T7 journal exists before any write", os.path.exists(jpath))
-    check("T7 journal state is 'open' pre-write", j0["state"] == "open", j0["state"])
-    check("T7 all patches start as pending",
-          all(x["status"] == "pending" for x in j0["patches"]))
-    d.reopen(writable=True)
-    failed = False
-    try:
-        tx.run()
-    except DiskError:
-        failed = True
-    d.close()
-    j1 = load_journal(jpath)
-    check("T7 stale patch aborts the transaction", failed)
-    check("T7 journal state becomes 'partial'", j1["state"] == "partial", j1["state"])
-    check("T7 first patch recorded as done", j1["patches"][0]["status"] == "done",
-          j1["patches"][0]["status"])
-    check("T7 second patch recorded as failed", j1["patches"][1]["status"] == "failed",
-          j1["patches"][1]["status"])
-    check("T7 the first patch really landed", img7.read(0, 1)[:4] == b"\xA1" * 4)
-    undo_journal(jpath)
-    check("T7 partial undo reverts exactly what was written",
-          img7.read(0, 1) == bytes(512))
-    check("T7 journal marked rolled_back",
-          load_journal(jpath)["state"] == "rolled_back")
-
-    # ================================================================== T8 ==
-    # Hard gate: no strong candidate -> no rebuild, with an explicit reason
-    p8 = os.path.join(tmp, "no_proof.img")
-    img8 = _Img(p8, 64 * MIB)
-    img8.put(2048, _mk_ntfs_vbr(40960, hidden=2048))     # primary only, no mirror
-    img8.zero(0, 1)
-    d, r = _scan_file(p8, deep=True)
-    cand = [c for c in r.carved if c.start == 2048]
-    check("T8 candidate is found", len(cand) == 1, [c.start for c in r.carved])
-    if cand:
-        check("T8 but its extent is not proven",
-              not cand[0].ev.extent_verified, cand[0].ev.extent_source)
-        check("T8 and it is blocked", any(k == "extent_unverified"
-                                          for k, _ in cand[0].ev.blockers))
-    check("T8 strong_candidates() returns nothing", strong_candidates(r) == [])
-    d.close()
-    act, reasons = _build(p8, "mbr-rebuild")
-    check("T8 mbr-rebuild is BLOCKED", act is None)
-    check("T8 the reason names the missing proof",
-          bool(reasons) and any("strong" in x or "طول" in x for x in reasons), reasons)
-    rc, _ = _apply(p8, "mbr-rebuild")
-    check("T8 apply returns EXIT_BLOCKED", rc == EXIT_BLOCKED, rc)
-    check("T8 nothing was written", img8.read(0, 1) == bytes(512))
-
-    # ================================================================== T9 ==
-    # With proof present, the rebuild is allowed and correct
-    p9 = os.path.join(tmp, "rebuildable.img")
-    img9 = _Img(p9, 128 * MIB)
-    _put_ntfs(img9, 2048, 65536)
-    _put_exfat(img9, 131072, 65536)
-    img9.zero(0, 1)
-    d, r = _scan_file(p9, deep=True)
-    strong = strong_candidates(r)
-    check("T9 two strong candidates", len(strong) == 2,
-          [(c.start, c.level, c.ev.extent_source) for c in r.carved])
-    d.close()
-    rc, jp9 = _apply(p9, "mbr-rebuild")
-    check("T9 mbr-rebuild applied", rc == EXIT_OK, rc)
-    d, r = _scan_file(p9)
-    check("T9 table now describes both volumes",
-          [(x.start, x.sectors, x.fs_name()) for x in r.parts] ==
-          [(2048, 65536, "NTFS"), (131072, 65536, "exFAT")],
-          [(x.start, x.sectors, x.fs_name()) for x in r.parts])
-    d.close()
-    undo_journal(jp9)
-    check("T9 undo removes the table again", img9.read(0, 1) == bytes(512))
-
-    # ================================================================= T10 ==
-    # --apply alone is not enough for an inferred rebuild
-    rc, _ = _apply(p9, "gpt-rebuild", allow_inferred=False)
-    check("T10 inferred rebuild refused without --allow-inferred",
-          rc == EXIT_BLOCKED, rc)
-    check("T10 still nothing written", img9.read(0, 1) == bytes(512))
-
-    # ================================================================= T11 ==
-    # Unknown filesystem must not be guessed as 0x07
-    p11 = os.path.join(tmp, "unknown_fs.img")
-    img11 = _Img(p11, 64 * MIB)
-    _put_ntfs(img11, 2048, 20480)
-    blob = bytearray(512)
-    blob[510:512] = b"\x55\xAA"
-    img11.put(40960, bytes(blob))
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x07, 2048, 20480, True)
-    m[0x1CE:0x1DE] = build_mbr_entry(0x07, 40960, 20480)
-    m[510:512] = b"\x55\xAA"
-    img11.put(0, bytes(m))
-    d, r = _scan_file(p11)
-    unknown = [x for x in r.parts if x.start == 40960]
-    check("T11 the unknown region is not promoted to a real filesystem",
-          unknown and unknown[0].fs_name().startswith("unknown"),
-          unknown[0].fs_name() if unknown else None)
-    check("T11 and it is not a strong candidate",
-          all(x.start != 40960 for x in strong_candidates(r)))
-    d.close()
-
-    # ================================================================= T12 ==
-    # Geometry mismatch is a disk-level blocker; only gpt-fix-geometry passes
-    p12 = os.path.join(tmp, "grown.img")
-    img12 = _Img(p12, 128 * MIB)
-    tot12 = (128 * MIB) // 512
-    _put_ntfs(img12, 2048, 100000)
-    b12 = build_gpt(tot12, 512, [{"first": 2048, "last": 2048 + 100000 - 1,
-                                  "type_guid": GUID_MSDATA, "name": "d"}])
-    img12.put(0, build_protective_mbr(tot12))
-    img12.put(1, b12["primary_header"])
-    img12.put(2, b12["primary_entries"])
-    img12.put(b12["backup_entries_lba"], b12["backup_entries"])
-    img12.put(b12["backup_header_lba"], b12["backup_header"])
-    with open(p12, "r+b") as f:
-        f.truncate(192 * MIB)               # the VMDK extent was wrong
-    d, r = _scan_file(p12)
-    check("T12 geometry mismatch is a disk blocker",
-          "geometry_mismatch" in r.blocker_keys(), r.blocker_keys())
-    check("T12 gpt-rebuild is gated off", probe_gate(d, r, "gpt-rebuild") == GATE_BLOCKED)
-    check("T12 gpt-fix-geometry is exempt",
-          probe_gate(d, r, "gpt-fix-geometry") != GATE_BLOCKED)
-    d.close()
-    rc, _ = _apply(p12, "gpt-rebuild")
-    check("T12 rebuild blocked at execution too", rc == EXIT_BLOCKED, rc)
-    rc, _ = _apply(p12, "gpt-fix-geometry")
-    check("T12 geometry fix applied", rc == EXIT_OK, rc)
-    d, r = _scan_file(p12)
-    check("T12 mismatch cleared", "geometry_mismatch" not in r.blocker_keys()
-          and r.gpt_p["valid"] and r.gpt_b["valid"], r.gpt_p["errors"])
-    d.close()
-
-    # ================================================================= T13 ==
-    # vbr-restore only with a mirror that validates against the extent
-    p13 = os.path.join(tmp, "ntfs_dead_vbr.img")
-    img13 = _Img(p13, 64 * MIB)
-    _put_ntfs(img13, 2048, 40960)
-    good = img13.read(2048, 1)
-    img13.put(0, bytes(bytearray(512)))
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x07, 2048, 40960, True)
-    m[510:512] = b"\x55\xAA"
-    img13.put(0, bytes(m))
-    img13.zero(2048)
-    d, r = _scan_file(p13)
-    num = r.parts[0].num
-    mir = find_validated_mirror(d, r.parts[0])
-    check("T13 mirror validated against the partition span",
-          mir and mir["ok"], mir["reasons"] if mir else None)
-    d.close()
-    rc, jp13 = _apply(p13, "vbr-restore", part=num)
-    check("T13 vbr-restore applied", rc == EXIT_OK, rc)
-    check("T13 boot sector byte-identical to the mirror", img13.read(2048, 1) == good)
-    d, r = _scan_file(p13)
-    check("T13 volume is healthy again", r.parts[0].level == "strong",
-          r.parts[0].level)
-    d.close()
-
-    # mirror that belongs to a different span must be refused
-    p13b = os.path.join(tmp, "bad_mirror.img")
-    img13b = _Img(p13b, 64 * MIB)
-    img13b.put(2048 + 30000, _mk_ntfs_vbr(40960, hidden=2048))
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x07, 2048, 30001, True)
-    m[510:512] = b"\x55\xAA"
-    img13b.put(0, bytes(m))
-    d, r = _scan_file(p13b)
-    mir = find_validated_mirror(d, r.parts[0])
-    check("T13b mismatched mirror is rejected", mir and not mir["ok"],
-          mir["checks"] if mir else None)
-    d.close()
-    rc, _ = _apply(p13b, "vbr-restore", part=1)
-    check("T13b vbr-restore blocked", rc == EXIT_BLOCKED, rc)
-    check("T13b nothing written to the volume start",
-          img13b.read(2048, 1) == bytes(512))
-
-    # ================================================================= T14 ==
-    # ReFS: the volume header copy at the end of the volume is real evidence.
-    # v1.1 hard-coded "ReFS has no mirror" and was wrong; this pins the fix.
-    p14 = os.path.join(tmp, "refs.img")
-    img14 = _Img(p14, 256 * MIB)
-    part_start, part_sectors = 32768, (256 * MIB) // 512 - 32768 - 4063
-    vol_sectors = part_sectors - 2048          # ReFS need not fill the partition
-    _put_refs(img14, part_start, vol_sectors)
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x07, part_start, part_sectors, True)
-    m[510:512] = b"\x55\xAA"
-    img14.put(0, bytes(m))
-    d, r = _scan_file(p14)
-    ev14 = r.parts[0].ev
-    check("T14 ReFS detected", r.parts[0].fs_name() == "ReFS")
-    check("T14 FSRS parsed at the real offset 0x10",
-          r.parts[0].fs["fields"]["total_sectors"] == vol_sectors,
-          r.parts[0].fs["fields"])
-    check("T14 volume header copy found at the end of the volume",
-          ev14.signals["mirror_signature"]["value"],
-          ev14.signals["mirror_signature"]["why"])
-    check("T14 the copy proves the volume length",
-          (ev14.extent_source or "").startswith("ReFS volume header copy"),
-          ev14.extent_source)
-    check("T14 a ReFS volume shorter than its partition is not a failure",
-          ev14.signals["extent_agreement"]["value"],
-          ev14.signals["extent_agreement"]["why"])
-    check("T14 healthy ReFS reaches level strong", r.parts[0].level == "strong",
-          (r.parts[0].level, ev14.confidence))
-    check("T14 superblock corroboration found",
-          ev14.signals["refs_superblock"]["value"])
-    num14 = r.parts[0].num
-    plans14 = suggest_plans(d, r)
-    check("T14 a healthy ReFS volume gets no repair suggestion",
-          not any(x["action"] == "refsutil" for x in plans14),
-          [x["action"] for x in plans14])
-    d.close()
-    act, reasons = _build(p14, "vbr-restore", part=num14)
-    check("T14 sector-level repair on ReFS is still refused", act is None)
-    check("T14 refusal points at refsutil",
-          bool(reasons) and any("refsutil" in x for x in reasons), reasons)
-
-    # ================================================================= T21 ==
-    # Regression: layout that combines an MSR partition, a saturated
-    # protective-MBR sector count, and a side-aware GPT backup header — the
-    # combination that previously produced false disk-level blockers.
-    p21 = os.path.join(tmp, "msr_layout.img")
-    img21 = _Img(p21, 256 * MIB)
-    tot21 = (256 * MIB) // 512
-    msr_start, msr_end = 34, 32767
-    dat_start = 32768
-    dat_end = tot21 - 4064
-    vol_sectors = (dat_end - dat_start + 1) - 2048
-    _put_refs(img21, dat_start, vol_sectors)
-    ents21 = [{"first": msr_start, "last": msr_end, "type_guid": GUID_MSR,
-               "name": "Microsoft reserved partition"},
-              {"first": dat_start, "last": dat_end, "type_guid": GUID_MSDATA,
-               "name": "Basic data partition"}]
-    b21 = build_gpt(tot21, 512, ents21)
-    pm = bytearray(build_protective_mbr(tot21))
-    # the saturated sector count a real protective MBR carries on big disks
-    struct.pack_into("<I", pm, 0x1BE + 12, 0xFFFFFFFF)
-    img21.put(0, bytes(pm))
-    img21.put(1, b21["primary_header"])
-    img21.put(2, b21["primary_entries"])
-    img21.put(b21["backup_entries_lba"], b21["backup_entries"])
-    img21.put(b21["backup_header_lba"], b21["backup_header"])
-    d, r = _scan_file(p21)
-    check("T21 saturated protective MBR is not an out-of-range error",
-          r.mbr["out_of_range"] == 0, r.mbr["out_of_range"])
-    check("T21 no false disk-level blocker", r.blocker_keys() == [], r.blocker_keys())
-    check("T21 backup GPT AlternateLBA=1 is correct, not a mismatch",
-          not r.gpt_b.get("geometry_mismatch"), r.gpt_b["errors"])
-    check("T21 primary GPT has no geometry complaint",
-          not r.gpt_p.get("geometry_mismatch"), r.gpt_p["errors"])
-    msr = [x for x in r.parts if x.start == msr_start]
-    check("T21 MSR partition recognised", len(msr) == 1)
-    if msr:
-        check("T21 MSR is not treated as damaged",
-              msr[0].ev.signals["vbr_signature"]["value"] is True,
-              msr[0].ev.signals["vbr_signature"]["why"])
-        check("T21 MSR is not reported as RAW",
-              not any("#%d" % msr[0].num in w and "RAW" in w for w in r.warnings),
-              r.warnings)
-    plans21 = [x["action"] for x in suggest_plans(d, r)]
-    check("T21 nothing is suggested for a healthy disk",
-          "vbr-restore" not in plans21 and "refsutil" not in plans21, plans21)
-    check("T21 the ReFS volume is strong",
-          [x.level for x in r.parts if x.start == dat_start] == ["strong"],
-          [(x.start, x.level) for x in r.parts])
-    d.close()
-
-    # ================================================================= T22 ==
-    # Triage verdicts. Four damage patterns, four different conclusions.
-    def _pseudo(seed, size):
-        buf = bytearray()
-        h = hashlib.sha256(("seed%d" % seed).encode()).digest()
-        while len(buf) < size:
-            h = hashlib.sha256(h).digest()
-            buf += h
-        return bytes(buf[:size])
-
-    noise = _pseudo(7, MIB)
-    check("T22 test noise carries no filesystem signature",
-          not any(sig in noise for sig, _ in FORENSIC_SIGS))
-
-    targs = _fake_args(triage=True, triage_samples=200, triage_tail_mib=32,
-                       triage_edge_gib=1)
-
-    def _triage_one(path, start, end):
-        dd = RawDisk(path, writable=False)
-        try:
-            rr = scan(dd)
-            pp = [x for x in rr.all_parts if x.start == start]
-            if not pp:
-                pp = [Part(start, end - start + 1, "MANUAL")]
-                pp[0].fs = probe_partition_fs(dd, pp[0])
-                pp[0].ev = build_evidence(dd, pp[0])
-            return triage_partition(dd, pp[0], targs)
-        finally:
-            dd.close()
-
-    # (a) boot sector wiped, everything else intact
-    pa = os.path.join(tmp, "tri_boot.img")
-    ia = _Img(pa, 192 * MIB)
-    a_start = 2048
-    a_end = (192 * MIB) // 512 - 2048
-    a_vol = (a_end - a_start + 1) - 2048
-    _put_refs(ia, a_start, a_vol)
-    ia.zero(a_start)
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x07, a_start, a_end - a_start + 1, True)
-    m[510:512] = b"\x55\xAA"
-    ia.put(0, bytes(m))
-    ta = _triage_one(pa, a_start, a_end)
-    check("T22a wiped boot sector detected", ta["first_sector_zero"])
-    check("T22a ReFS header copy recovered from the end",
-          ta["refs_header_copy"] and ta["refs_header_copy"]["self_consistent"],
-          ta["refs_header_copy"])
-    check("T22a true volume length recovered",
-          ta["refs_header_copy"]["num_sectors"] == a_vol,
-          ta["refs_header_copy"])
-    check("T22a verdict = surface damage",
-          "سطحی" in ta["verdict"]["label"], ta["verdict"]["label"])
-    check("T22a next step points at refsutil",
-          any("refsutil" in s for s in ta["verdict"]["next_steps"]),
-          ta["verdict"]["next_steps"])
-
-    # (b) the head of the volume was overwritten with foreign data
-    pb = os.path.join(tmp, "tri_head.img")
-    ib = _Img(pb, 192 * MIB)
-    _put_refs(ib, a_start, a_vol)
-    for i in range(80):
-        ib.put(a_start + i * 2048, noise)
-    ib.put(0, bytes(m))
-    tb = _triage_one(pb, a_start, a_end)
-    check("T22b first sector is foreign data, not zeros",
-          not tb["first_sector_zero"] and tb["first_sector_entropy"] > 7.0,
-          tb["first_sector_entropy"])
-    check("T22b verdict = head overwritten",
-          "ابتدای ولوم" in tb["verdict"]["label"], tb["verdict"]["label"])
-    check("T22b damage size is reported",
-          tb.get("first_structure", {}).get("bad_head_bytes", 0) > 32 * MIB,
-          tb.get("first_structure"))
-
-    # (c) the whole volume is foreign high-entropy data
-    pc = os.path.join(tmp, "tri_all.img")
-    ic = _Img(pc, 192 * MIB)
-    for i in range(0, 190):
-        ic.put(a_start + i * 2048, noise)
-    ic.put(0, bytes(m))
-    tc = _triage_one(pc, a_start, a_end)
-    check("T22c verdict = widespread overwrite / extent mapping",
-          "بازنویسی گسترده" in tc["verdict"]["label"], tc["verdict"]["label"])
-    check("T22c next step points back at the VMDK extents",
-          any("VMDK" in s for s in tc["verdict"]["next_steps"]),
-          tc["verdict"]["next_steps"])
-
-    # (d) the volume is empty
-    pd_ = os.path.join(tmp, "tri_zero.img")
-    id_ = _Img(pd_, 192 * MIB)
-    id_.put(0, bytes(m))
-    td = _triage_one(pd_, a_start, a_end)
-    check("T22d verdict = effectively empty",
-          "خالی" in td["verdict"]["label"], td["verdict"]["label"])
-
-    # ================================================================= T23 ==
-    # --deep-ignore-table finds a volume hidden inside a wrong table entry
-    p23 = os.path.join(tmp, "wrong_table.img")
-    img23 = _Img(p23, 128 * MIB)
-    _put_ntfs(img23, 131072, 65536)              # the real volume
-    m23 = bytearray(512)                          # a table that claims the disk
-    m23[0x1BE:0x1CE] = build_mbr_entry(0x07, 2048, 260096, True)
-    m23[510:512] = b"\x55\xAA"
-    img23.put(0, bytes(m23))
-    d = RawDisk(p23)
-    r_norm = scan(d, deep=True, deep_step=512)
-    r_ign = scan(d, deep=True, deep_step=512, ignore_table=True)
-    found_norm = any(c.start == 131072 for c in r_norm.carved)
-    found_ign = any(c.start == 131072 for c in r_ign.carved)
-    check("T23 the hidden volume is missed while trusting the table",
-          not found_norm, [c.start for c in r_norm.carved])
-    check("T23 --deep-ignore-table finds it", found_ign,
-          [c.start for c in r_ign.carved])
-    d.close()
-
-    # ================================================================= T15 ==
-    # Imager: unreadable sectors are recorded, never silently zeroed
-    class _Flaky(RawDisk):
-        bad_from = 4 * MIB
-        bad_to = 4 * MIB + 8192
-
-        def read_at(self, offset, length):
-            a, b = offset, offset + length
-            if a < self.bad_to and b > self.bad_from:
-                raise DiskError("simulated media error at %d" % offset)
-            return RawDisk.read_at(self, offset, length)
-
-    p15 = os.path.join(tmp, "flaky.img")
-    _Img(p15, 16 * MIB)
-    fd = _Flaky(p15, writable=False)
-    imgpath = os.path.join(tmp, "flaky_copy.img")
-    _, badmap = make_image(fd, imgpath, retries=2, fill="pat")
-    fd.close()
-    check("T15 image is full size", os.path.getsize(imgpath) == 16 * MIB)
-    check("T15 badmap records the unreadable span",
-          badmap["unreadable_bytes"] == 8192 and len(badmap["bad_ranges"]) == 1,
-          (badmap["unreadable_bytes"], badmap["bad_ranges"]))
-    check("T15 badmap json written", os.path.exists(imgpath + ".badmap.json"))
-    with open(imgpath, "rb") as f:
-        f.seek(4 * MIB)
-        filler = f.read(64)
-    check("T15 filler is a recognisable pattern, not zeros",
-          b"DISKDOCTOR-UNREADABLE" in filler, filler[:32])
-
-    # ================================================================= T16 ==
-    # 4Kn disk end to end
-    p16 = os.path.join(tmp, "4kn.img")
-    img16 = _Img(p16, 256 * MIB, sector=4096)
-    tot16 = (256 * MIB) // 4096
-    vbr = _mk_ntfs_vbr(8192, bps=4096, hidden=256)
-    img16.put(256, vbr)
-    img16.put(256 + 8192 - 1, vbr)
-    b16 = build_gpt(tot16, 4096, [{"first": 256, "last": 256 + 8192 - 1,
-                                   "type_guid": GUID_MSDATA, "name": "4kn"}])
-    img16.put(0, build_protective_mbr(tot16))
-    img16.put(1, b16["primary_header"])
-    img16.put(2, b16["primary_entries"])
-    img16.put(b16["backup_entries_lba"], b16["backup_entries"])
-    img16.put(b16["backup_header_lba"], b16["backup_header"])
-    d, r = _scan_file(p16, sector=4096)
-    check("T16 4Kn GPT parsed", r.gpt_p["valid"] and r.gpt_b["valid"], r.gpt_p["errors"])
-    check("T16 4Kn NTFS is strong", r.parts and r.parts[0].level == "strong",
-          [(x.fs_name(), x.level) for x in r.parts])
-    d.close()
-
-    # ================================================================= T17 ==
-    # BitLocker is a blocker, ext4 is detected, superfloppy still works
-    p17 = os.path.join(tmp, "bitlocker.img")
-    img17 = _Img(p17, 32 * MIB)
-    bl = bytearray(512)
-    bl[0:3] = b"\xEB\x58\x90"
-    bl[3:11] = b"-FVE-FS-"
-    struct.pack_into("<H", bl, 0x0B, 512)
-    bl[510:512] = b"\x55\xAA"
-    img17.put(2048, bytes(bl))
-    m = bytearray(512)
-    m[0x1BE:0x1CE] = build_mbr_entry(0x07, 2048, 20480, True)
-    m[510:512] = b"\x55\xAA"
-    img17.put(0, bytes(m))
-    d, r = _scan_file(p17)
-    check("T17 BitLocker detected and blocked",
-          r.parts[0].fs_name() == "BitLocker" and
-          any(k == "encrypted" for k, _ in r.parts[0].ev.blockers))
-    d.close()
-
-    p18 = os.path.join(tmp, "ext4.img")
-    img18 = _Img(p18, 32 * MIB)
-    img18.put(0, bytes(1024) + _mk_ext4_sb())
-    d = RawDisk(p18)
-    fsi = probe_fs(d.read_at(0, 68 * KIB), 512)
-    check("T17b ext4 detected", fsi and fsi["fs"] == "ext4", fsi)
-    d.close()
-
-    p19 = os.path.join(tmp, "superfloppy.img")
-    img19 = _Img(p19, 32 * MIB)
-    _put_fat32(img19, 0, 65536)
-    d, r = _scan_file(p19)
-    check("T17c superfloppy detected", "Superfloppy" in r.scheme, r.scheme)
-    d.close()
-
-    # ================================================================= T18 ==
-    # Container detection blocks everything
-    p20 = os.path.join(tmp, "fake.vmdk")
-    with open(p20, "wb") as f:
-        f.write(b"KDMV" + bytes(2 * MIB))
-    d, r = _scan_file(p20)
-    check("T18 VMDK container detected", "container" in r.blocker_keys(),
-          r.blocker_keys())
-    d.close()
-    rc, _ = _apply(p20, "mbr-rebuild")
-    check("T18 all writes blocked on a container", rc == EXIT_BLOCKED, rc)
-
-    # ================================================================= T19 ==
-    # check_journals finds an unfinished journal
-    rc = check_journals(bk)
-    check("T19 journal audit runs", rc == EXIT_OK)
-
-    # ================================================================= T20 ==
-    # Deep scan speed
-    t0 = time.time()
-    d = RawDisk(p5)
-    scan(d, deep=True, deep_step=512)
-    dt = time.time() - t0
-    d.close()
-    check("T20 deep scan of 256 MiB under 20s", dt < 20, "%.2fs" % dt)
-
-    # ================================================================= T24 ==
-    # --auto : one command, every answer, still zero writes
-    p24a = os.path.join(tmp, "auto_healthy.img")
-    i24a = _Img(p24a, 192 * MIB)
-    _put_ntfs(i24a, 2048, 65536)
-    _put_fat32(i24a, 131072, 65536)
-    m24 = bytearray(512)
-    m24[0x1BE:0x1CE] = build_mbr_entry(0x07, 2048, 65536, True)
-    m24[0x1CE:0x1DE] = build_mbr_entry(0x0C, 131072, 65536)
-    m24[510:512] = b"\x55\xAA"
-    i24a.put(0, bytes(m24))
-    sha_a = i24a.sha()
-
-    p24b = os.path.join(tmp, "auto_broken.img")
-    i24b = _Img(p24b, 192 * MIB)
-    bstart = 2048
-    bend = (192 * MIB) // 512 - 2048
-    bvol = (bend - bstart + 1) - 2048
-    _put_refs(i24b, bstart, bvol)
-    i24b.zero(bstart)                      # boot sector gone, structure intact
-    mb = bytearray(512)
-    mb[0x1BE:0x1CE] = build_mbr_entry(0x07, bstart, bend - bstart + 1, True)
-    mb[510:512] = b"\x55\xAA"
-    i24b.put(0, bytes(mb))
-    sha_b = i24b.sha()
-
-    rep = os.path.join(tmp, "auto_report.txt")
-    aargs = _fake_args(auto=True, quiet=True, auto_out=rep, triage=True,
-                       triage_samples=96, triage_tail_mib=32, triage_edge_gib=1)
-
-    saved = globals().get("REPORTFILE")
-    s_ok = auto_one(p24a, aargs)
-    s_bad = auto_one(p24b, aargs)
-    globals()["REPORTFILE"] = saved
-
-    check("T24 healthy image is called healthy", s_ok["verdict"] == "سالم",
-          s_ok["verdict"])
-    check("T24 healthy image needs no repair plan", s_ok["plans"] == [],
-          s_ok["plans"])
-    check("T24 damaged image is flagged", s_bad["verdict"] != "سالم",
-          s_bad["verdict"])
-    check("T24 damaged image got a triage verdict",
-          s_bad["triage"] and s_bad["triage"][0]["verdict"]["label"],
-          s_bad.get("triage"))
-    check("T24 triage recovered the true ReFS length",
-          (s_bad["triage"][0].get("refs_header_copy") or {}).get("num_sectors") == bvol,
-          s_bad["triage"][0].get("refs_header_copy"))
-    check("T24 auto wrote nothing to either image",
-          i24a.sha() == sha_a and i24b.sha() == sha_b)
-
-    aargs2 = _fake_args(auto=True, quiet=True, auto_out=rep, disk=p24b,
-                        triage=True, triage_samples=64, triage_tail_mib=16,
-                        triage_edge_gib=1)
-    rc24 = auto_run(aargs2)
-    check("T24 auto_run completes", rc24 == EXIT_OK, rc24)
-    check("T24 text report written", os.path.exists(rep) and
-          os.path.getsize(rep) > 500, os.path.getsize(rep) if os.path.exists(rep) else 0)
-    jrep = os.path.splitext(rep)[0] + ".json"
-    check("T24 json report written", os.path.exists(jrep))
-    if os.path.exists(jrep):
-        with open(jrep, encoding="utf-8") as f:
-            jd = json.load(f)
-        check("T24 json carries the per-disk verdict",
-              jd["disks"] and jd["disks"][0].get("verdict"), jd.get("disks"))
-    with open(rep, encoding="utf-8") as f:
-        body = f.read()
-    check("T24 report contains the triage section", "TRIAGE" in body)
-    check("T24 report is plain text without escape codes", "\x1b[" not in body)
-
-    # ================================================================= T25 ==
-    # Regression: a volume full of compressed backup files samples as ~100%
-    # high entropy whether it is damaged or not. Entropy must not be treated
-    # as evidence of damage on its own.
-    def _fill(img, lba_from, lba_to, block):
-        with open(img.path, "r+b") as f:
-            f.seek(lba_from * img.sector)
-            todo = (lba_to - lba_from) * img.sector
-            while todo > 0:
-                n = min(len(block), todo)
-                f.write(block[:n])
-                todo -= n
-
-    def _pseudo2(seed, size):
-        buf = bytearray()
-        h = hashlib.sha256(("s%d" % seed).encode()).digest()
-        while len(buf) < size:
-            h = hashlib.sha256(h).digest()
-            buf += h
-        return bytes(buf[:size])
-
-    noise2 = _pseudo2(11, MIB)
-
-    # a HEALTHY ReFS volume that happens to be completely full of compressed
-    # data — exactly what a Veeam repository looks like
-    p25h = os.path.join(tmp, "full_healthy.img")
-    i25h = _Img(p25h, 128 * MIB)
-    hs, he = 2048, (128 * MIB) // 512 - 2048
-    hvol = (he - hs + 1) - 2048
-    _fill(i25h, hs, he, noise2)
-    _put_refs(i25h, hs, hvol)
-    m25 = bytearray(512)
-    m25[0x1BE:0x1CE] = build_mbr_entry(0x07, hs, he - hs + 1, True)
-    m25[510:512] = b"\x55\xAA"
-    i25h.put(0, bytes(m25))
-    d, r = _scan_file(p25h)
-    check("T25 the full healthy ReFS volume is still recognised",
-          r.parts and r.parts[0].fs_name() == "ReFS"
-          and r.parts[0].level == "strong",
-          [(x.fs_name(), x.level) for x in r.parts])
-    ctl_part = r.parts[0]
-    d.close()
-
-    # the same volume with 32 MiB of its head destroyed
-    p25d = os.path.join(tmp, "full_damaged.img")
-    i25d = _Img(p25d, 128 * MIB)
-    _fill(i25d, hs, he, noise2)
-    _put_refs(i25d, hs, hvol)
-    _fill(i25d, hs, hs + 65536, noise2)          # wipe the first 32 MiB
-    i25d.put(0, bytes(m25))
-
-    targs25 = _fake_args(triage_samples=96, triage_tail_mib=16,
-                         triage_edge_gib=1, triage_head_gib=1,
-                         triage_head_samples=48)
-    _CONTROL_CACHE.clear()
-    dd_ = RawDisk(p25d, writable=False)
-    rr = scan(dd_)
-    t_no_ctl = triage_partition(dd_, rr.parts[0], targs25)
-    dd_.close()
-
-    check("T25 without a control the entropy body is not called overwritten",
-          "بازنویسی گسترده" not in t_no_ctl["verdict"]["label"],
-          t_no_ctl["verdict"]["label"])
-    check("T25 the head damage is measured instead",
-          "ابتدای ولوم" in t_no_ctl["verdict"]["label"],
-          (t_no_ctl["verdict"]["label"], t_no_ctl.get("first_structure")))
-    check("T25 tail structure is recognised as intact",
-          t_no_ctl["refs_header_copy"] and
-          t_no_ctl["refs_header_copy"]["self_consistent"])
-
-    # now with the healthy volume supplied as the control
-    _CONTROL_CACHE.clear()
-    targs25b = _fake_args(triage_samples=96, triage_tail_mib=16,
-                          triage_edge_gib=1, triage_head_gib=1,
-                          triage_head_samples=48)
-    targs25b._control = {"path": p25h, "start": ctl_part.start,
-                         "sectors": ctl_part.sectors, "fs": "ReFS"}
-    dd_ = RawDisk(p25d, writable=False)
-    rr = scan(dd_)
-    t_ctl = triage_partition(dd_, rr.parts[0], targs25b)
-    dd_.close()
-    check("T25 control measurement was taken", t_ctl["control"] is not None,
-          t_ctl.get("control"))
-    check("T25 control shows the same high entropy",
-          t_ctl["control"]["high_entropy"] > 0.5, t_ctl.get("control"))
-    check("T25 verdict records that entropy is not informative",
-          t_ctl["verdict"]["entropy_informative"] is False,
-          t_ctl["verdict"]["entropy_informative"])
-    check("T25 verdict text says so explicitly",
-          any("تفکیک" in x or "نشانه خرابی نیست" in x
-              for x in t_ctl["verdict"]["lines"]), t_ctl["verdict"]["lines"])
-
-    # ================================================================= T26 ==
-    # A genuinely overwritten volume, measured against a clean control, still
-    # gets called overwritten.
-    p26 = os.path.join(tmp, "really_overwritten.img")
-    i26 = _Img(p26, 128 * MIB)
-    _fill(i26, hs, he, noise2)                   # nothing but foreign data
-    i26.put(0, bytes(m25))
-    p26c = os.path.join(tmp, "clean_control.img")
-    i26c = _Img(p26c, 128 * MIB)
-    _put_refs(i26c, hs, hvol)                    # sparse, low-entropy control
-    i26c.put(0, bytes(m25))
-    d, rc26 = _scan_file(p26c)
-    ctl26 = rc26.parts[0]
-    d.close()
-    _CONTROL_CACHE.clear()
-    targs26 = _fake_args(triage_samples=96, triage_tail_mib=16,
-                         triage_edge_gib=1, triage_head_gib=1,
-                         triage_head_samples=48)
-    targs26._control = {"path": p26c, "start": ctl26.start,
-                        "sectors": ctl26.sectors, "fs": "ReFS"}
-    dd_ = RawDisk(p26, writable=False)
-    rr26 = scan(dd_)
-    t26 = triage_partition(dd_, rr26.parts[0], targs26)
-    dd_.close()
-    check("T26 clean control shows low entropy",
-          t26["control"]["high_entropy"] < 0.5, t26.get("control"))
-    check("T26 a truly overwritten volume is still flagged",
-          "بازنویسی گسترده" in t26["verdict"]["label"],
-          t26["verdict"]["label"])
-
-    # ================================================================= T27 ==
-    # The forward scan must run even when the sampled map found nothing
-    p27 = os.path.join(tmp, "no_samples_hit.img")
-    i27 = _Img(p27, 192 * MIB)
-    _put_refs(i27, hs, hvol)
-    for i in range(20):
-        i27.put(hs + i * 2048, noise2)
-    i27.put(0, bytes(m25))
-    _CONTROL_CACHE.clear()
-    targs27 = _fake_args(triage_samples=24, triage_tail_mib=16,
-                         triage_edge_gib=1, triage_head_gib=1,
-                         triage_head_samples=32)
-    dd_ = RawDisk(p27, writable=False)
-    rr27 = scan(dd_)
-    t27 = triage_partition(dd_, rr27.parts[0], targs27)
-    dd_.close()
-    check("T27 the forward scan ran regardless of the map result",
-          "first_structure" in t27, list(t27.keys()))
-    check("T27 head map was produced", t27.get("head_map", {}).get("samples", 0) > 0)
-
-    # ================================================================= T28 ==
-    # refsutil version-ceiling mismatch must be recognised and explained, not
-    # confused with "volume does not contain a recognized file system".
-    real_output = (
-        "Microsoft ReFS Salvage [Version 10.0.11070]\n"
-        "Copyright (c) 2015 Microsoft Corp.\n"
-        "Local time: 8/31/2026 11:33:52\n"
-        "Option(s) specified: -x\n"
-        "ReFS version: 3.14\n"
-        "Error: The volume is an unsupported ReFS version. This utility "
-        "supports versions up to 3.9. Volume is 3.14.\n"
-        "Error: Command failed.\n"
-        "Error: The volume does not contain a recognized file system. "
-        "Please make sure that all required file system drivers are loaded "
-        "and that the volume is not corrupt.\n"
-    )
-    mm = parse_refsutil_version_mismatch(real_output)
-    check("T28 version mismatch is detected from refsutil's own text",
-          mm is not None, mm)
-    check("T28 volume version parsed correctly",
-          mm and mm["volume_version"] == "3.14", mm)
-    check("T28 max supported version parsed correctly",
-          mm and mm["max_supported"] == "3.9", mm)
-
-    ordinary_fail = (
-        "Error: Could not open volume E:.\n"
-        "Error: The system cannot find the file specified.\n"
-    )
-    check("T28b an unrelated failure is not misread as a version mismatch",
-          parse_refsutil_version_mismatch(ordinary_fail) is None)
-
-    clean_success = (
-        "Microsoft ReFS Salvage [Version 10.0.26100]\n"
-        "ReFS version: 3.14\n"
-        "Salvage completed successfully.\n"
-    )
-    check("T28c a normal run (no error) is not flagged as a mismatch",
-          parse_refsutil_version_mismatch(clean_success) is None)
-
-    # the plan and warning text must carry the ReFS version so the person can
-    # check it against winver before ever calling refsutil
-    p28 = os.path.join(tmp, "refs_new_version.img")
-    i28 = _Img(p28, 128 * MIB)
-    s28, e28 = 2048, (128 * MIB) // 512 - 2048
-    v28 = (e28 - s28 + 1) - 2048
-    hdr28 = _mk_refs_vbr(v28, major=3, minor=14)
-    i28.put(s28, hdr28)
-    # a mismatched copy at the end: fs is still detected as ReFS 3.14, but the
-    # length cannot be proven, so it needs a plan without being wiped to RAW
-    i28.put(s28 + v28 - 1, _mk_refs_vbr(v28 - 500, major=3, minor=14))
-    m28 = bytearray(512)
-    m28[0x1BE:0x1CE] = build_mbr_entry(0x07, s28, e28 - s28 + 1, True)
-    m28[510:512] = b"\x55\xAA"
-    i28.put(0, bytes(m28))
-    d, r28 = _scan_file(p28)
-    plans28 = suggest_plans(d, r28)
-    refs_plan = [x for x in plans28 if x["action"] == "refsutil"]
-    check("T28d refsutil is suggested for the damaged ReFS 3.14 volume",
-          len(refs_plan) == 1, [x["action"] for x in plans28])
-    check("T28d the suggestion states the ReFS version",
-          refs_plan and "3.14" in refs_plan[0]["why"],
-          refs_plan[0]["why"] if refs_plan else None)
-    check("T28d disk warnings mention the version ceiling risk",
-          any("سقف نسخه" in w for w in r28.warnings), r28.warnings)
-    d.close()
-
-    # ================================================================= T29 ==
-    # The real CLI parser must define every attribute the code reads off args.
-    # Until now every test built its Namespace with _fake_args(), so three
-    # switches that were documented and used but never registered with
-    # argparse went unnoticed until a real run crashed with AttributeError.
-    parser29 = build_parser()
-    ns29 = parser29.parse_args([])
-    src29 = open(os.path.abspath(__file__), encoding="utf-8").read() \
-        if os.path.exists(os.path.abspath(__file__)) else ""
-    used29 = set(re.findall(r"\bargs\.([a-z_][a-z0-9_]*)", src29))
-    used29 |= set(re.findall(r'getattr\(args,\s*"([a-z_][a-z0-9_]*)"', src29))
-    used29 -= {"append", "_control"}          # not argparse attributes
-    have29 = set(vars(ns29))
-    missing29 = sorted(used29 - have29)
-    check("T29 every args.* the code reads is defined by the real parser",
-          not missing29, "missing from build_parser(): %s" % missing29)
-
-    fake29 = set(vars(_fake_args()))
-    drift29 = sorted(fake29 - have29)
-    check("T29 _fake_args does not drift ahead of the real parser",
-          not drift29, "in _fake_args but not in build_parser(): %s" % drift29)
-
-    # the triage switches specifically must parse and carry sane defaults
-    ns29b = parser29.parse_args(["--disk", "0", "--triage",
-                                 "--triage-head-gib", "4",
-                                 "--triage-head-samples", "32",
-                                 "--baseline", "6:32768"])
-    check("T29 --triage-head-gib parses", ns29b.triage_head_gib == 4)
-    check("T29 --triage-head-samples parses", ns29b.triage_head_samples == 32)
-    check("T29 --baseline parses", ns29b.baseline == "6:32768")
-    check("T29 triage head defaults are sane",
-          ns29.triage_head_gib == 8 and ns29.triage_head_samples == 128,
-          (ns29.triage_head_gib, ns29.triage_head_samples))
-
-    # ================================================================= T30 ==
-    # --find-name must locate a filename in raw bytes with no filesystem help,
-    # in both UTF-16LE (how NTFS/ReFS/exFAT store names) and ASCII, and must
-    # not invent hits when the name is absent.
-    p30 = os.path.join(tmp, "namesearch.img")
-    i30 = _Img(p30, 48 * MIB)
-    target30 = "Ftp (172.17.9.9).999D2026-01-02T030405_ABCD.vbk"
-    other30 = "SomeOtherServer.222D2026-01-02T030405_0000.vbk"
-    i30.put(1000, b"\x00" * 64 + target30.encode("utf-16-le") + b"\x00" * 64)
-    i30.put(5000, b"\x11" * 32 + other30.encode("utf-16-le") + b"\x11" * 32)
-    i30.put(9000, b"\x00" * 16 + target30.encode("ascii") + b"\x00" * 16)
-    d30 = RawDisk(p30, writable=False)
-    try:
-        r30 = find_name(d30, "Ftp")
-        check("T30 finds the name in raw bytes", len(r30["hits"]) >= 2,
-              len(r30["hits"]))
-        encs30 = set(h["encoding"] for h in r30["hits"])
-        check("T30 finds it in both UTF-16 and ASCII", encs30 == {"UTF-16", "ASCII"},
-              encs30)
-        lbas30 = sorted(set(h["lba"] for h in r30["hits"]))
-        check("T30 reports the right sectors", lbas30 == [1000, 9000], lbas30)
-
-        r30b = find_name(d30, "ftp")
-        check("T30 search is case-insensitive",
-              len(r30b["hits"]) == len(r30["hits"]), len(r30b["hits"]))
-
-        r30c = find_name(d30, "NoSuchServerName12345")
-        check("T30 absent name yields no hits", r30c["hits"] == [], r30c["hits"])
-
-        r30d = find_name(d30, "Ftp", max_hits=1)
-        check("T30 max_hits caps the result and flags truncation",
-              len(r30d["hits"]) == 1 and r30d["truncated"], r30d)
-
-        r30e = find_name(d30, "Ftp", limit=512)
-        check("T30 limit restricts how much is read",
-              r30e["hits"] == [] and r30e["scanned"] <= 64 * MIB + 512,
-              (r30e["hits"], r30e["scanned"]))
-    finally:
-        d30.close()
-
-    ns30 = build_parser().parse_args(["--disk", "0", "--find-name", "Ftp",
-                                      "--find-limit", "1024",
-                                      "--find-max-hits", "7"])
-    check("T30 --find-name parses", ns30.find_name == "Ftp")
-    check("T30 --find-limit parses", ns30.find_limit == 1024)
-    check("T30 --find-max-hits parses", ns30.find_max_hits == 7)
-
-    # ================================================================= T31 ==
-    # --dump-range must lift a sector range out read-only and surface the
-    # strings inside it, in both ASCII and UTF-16LE.
-    p31 = os.path.join(tmp, "dumprange.img")
-    i31 = _Img(p31, 32 * MIB)
-    ascii31 = "FTP (172.17.1.252).88D2026-01-15T030405_ABCD.vbk"
-    utf31 = "BackupJobMetadataEntry"
-    i31.put(700, b"\x00" * 40 + ascii31.encode("ascii") + b"\xff" * 40)
-    i31.put(701, b"\x00" * 16 + utf31.encode("utf-16-le") + b"\x00" * 16)
-    sha31 = i31.sha()
-    d31 = RawDisk(p31, writable=False)
-    outp31 = os.path.join(tmp, "range_out.bin")
-    try:
-        r31 = dump_range(d31, 700, 4, outp31)
-        check("T31 dump wrote the requested byte count",
-              r31["bytes"] == 4 * 512 and os.path.getsize(outp31) == 4 * 512,
-              (r31["bytes"], os.path.getsize(outp31)))
-        check("T31 dumped bytes match the disk",
-              open(outp31, "rb").read() == i31.read(700, 4))
-        check("T31 ASCII string extracted",
-              any(ascii31 in s for s in r31["strings"]), r31["strings"][:5])
-        check("T31 UTF-16 string extracted",
-              any(utf31 in s for s in r31["strings"]), r31["strings"][:5])
-        check("T31 dumping is read-only", i31.sha() == sha31)
-
-        try:
-            dump_range(d31, 10 ** 9, 4, outp31)
-            oob31 = False
-        except DiskError:
-            oob31 = True
-        check("T31 an out-of-range start LBA is refused", oob31)
-
-        r31b = dump_range(d31, (32 * MIB) // 512 - 2, 10, outp31)
-        check("T31 a range past the end is clamped, not crashed",
-              r31b["sectors"] == 2, r31b["sectors"])
-    finally:
-        d31.close()
-
-    ns31 = build_parser().parse_args(["--disk", "0",
-                                      "--dump-range", "9211248:64",
-                                      "--dump-out", "x.bin",
-                                      "--dump-strings-min", "9"])
-    check("T31 --dump-range parses", ns31.dump_range == "9211248:64")
-    check("T31 --dump-out parses", ns31.dump_out == "x.bin")
-    check("T31 --dump-strings-min parses", ns31.dump_strings_min == 9)
-
-    # ================================================================= T32 ==
-    # String extraction must separate real names from compression noise. Both
-    # sample sets below are verbatim output from a real dump of a compressed
-    # backup file, so this measures the filter against the thing it exists for.
-    real32 = [
-        "summary.xml", "FTP (172.17.1.252).vmx", "FTP (172.17.1.252).nvram2",
-        "FTP (172.17.1.252)_1.vmdk", "FTP (172.17.1.252)_2-flat.vmdk",
-        "FsAwareMeta:3748ff29-29b1-46a2-aae7-f7a30d48c77d:2000",
-        "Noavaran (172.17.1.200).218D2025-08-04T200026_4D32.vib",
-        "FTP (172.17.1.252)_D92AD.vbm", "desktop.ini",
-        "Print (172.17.1.242).125D2026-07-10T070022_49C5.vbk",
-        "Microsoft reserved partition", "Basic data partition",
-        "foundfiles.txt",
-    ]
-    noise32 = [
-        "v~J'\"(", "LX'? (", ",}GX!>", "dLeu-85", "hHn-fF", "U-%9/@g", "2yVHpY",
-        "1$2UIt", "o9'pUP", "@ffXKI_a", "by$Knw", ")r6yGy", "'Ar;B1U", "J}M+l7",
-        "5W]3 {1(", "G.yI938", "p72+z(", "csZ\"Nm", "2;K\"kH{A", "$f5b8VB",
-        "?7w{ bm80Y", "3C-d*?.eXa3", "DbN2ft", "JMo6:$", "6soO\"u", "I#`k0p%l",
-        "?>H<:+i%M", "u RkJW", "8^hcsl%", "K}:`7&", ";Dcs.4\"4[", "KzL(K{M",
-        "=p[.zu", "},K|qnn", "]5zxK6`|", "a(*BV|", "\"NJ3|.", "0J_`FX", "Zv8>0?",
-        "}`Uu[0", "{3;kf]~`", "fi]j95G", "p8mw43n3", "s)ks_+", "jhd -}", "oiD-!^",
-        "F^BTzj", ">?xzR&", "HQm'6Q", "){0;i!", "1(,G&a", "6[KvY+", "~A\\iUC",
-        "X]_x?e", "[E}+F6", ",lw$li", ">V.wv'zB", "NO|It*", "yw'B!W", "VD9#Ap",
-        "p= CrW", ":h,PD}", ";zFuZSl", "3xJ g!7o", "JdkU{f", "6F9w!?", "+g I7'",
-        "[I_#}1", "?}RP~V)", "Co&:-n", ",8gQ'9", "lsO[=[", "ko.3h.", "SXw\\@Z",
-        "^XQh/:", "=:%~@7l_", "f%[I.;", "eL{;{Q2", "pW@6?a", "8SL47f", "Uk5..V",
-        "W\"Ri9b",
-    ]
-    lost32 = [s for s in real32 if not looks_like_text(s)]
-    check("T32 no real filename is filtered out as noise", not lost32, lost32)
-    through32 = [s for s in noise32 if looks_like_text(s)]
-    check("T32 at least 90% of compression noise is filtered",
-          len(through32) <= len(noise32) * 0.10,
-          "%d/%d survived: %s" % (len(through32), len(noise32), through32[:6]))
-
-    # and the filter must be defeatable, because sometimes you want everything
-    blob32 = (b"\x00" * 8 + b"summary.xml" + b"\xff" * 8 + b"dLeu-85"
-              + b"\x00" * 8 + "FsAwareMeta".encode("utf-16-le") + b"\x00" * 8)
-    filt32 = extract_strings(blob32, 6, filter_noise=True)
-    raw32 = extract_strings(blob32, 6, filter_noise=False)
-    check("T32 filtered extraction keeps the real names",
-          "summary.xml" in filt32 and "FsAwareMeta" in filt32, filt32)
-    check("T32 filtered extraction drops the noise", "dLeu-85" not in filt32, filt32)
-    check("T32 --dump-raw-strings keeps everything", "dLeu-85" in raw32, raw32)
-
-    ns32 = build_parser().parse_args(["--disk", "0", "--dump-range", "1:1",
-                                      "--dump-raw-strings"])
-    check("T32 --dump-raw-strings parses", ns32.dump_raw_strings is True)
-
-    # ================================================================= T33 ==
-    # --find-vbm must locate real .vbm XML content and extract the documented
-    # fields (FilePath, BackupSize, EncryptionState, ...), distinguishing it
-    # from the directory-entry search (--find-name) which only sees the
-    # filename, not the file's own content.
-    vbm_xml = (
-        b'<?xml version="1.0" encoding="utf-8"?>'
-        b'<BackupMeta><Backup Id="4c26199b-f31f-4b71-930b-45838affc6ba" '
-        b'JobName="Ftp Job" EncryptionState="0" />'
-        b'<BackupMetaInfo><Storages><Storage '
-        b'FilePath="D:\\Backup\\Ftp\\FTP (172.17.1.252)D2026-01-15T030405_ABCD.vbk" '
-        b'Version="1"><Stats><CBackupStats><BackupSize>128849018880</BackupSize>'
-        b'<DataSize>987654321000</DataSize></CBackupStats></Stats></Storage>'
-        b'</Storages></BackupMetaInfo></BackupMeta>'
-    )
-    p33 = os.path.join(tmp, "vbm_meta.img")
-    i33 = _Img(p33, 16 * MIB)
-    i33.put(4000, vbm_xml)
-    sha33 = i33.sha()
-    d33 = RawDisk(p33, writable=False)
-    try:
-        r33 = find_vbm_metadata(d33, window=8192)
-        check("T33 locates the .vbm XML content", len(r33["hits"]) == 1,
-              len(r33["hits"]))
-        f33 = r33["hits"][0]["fields"] if r33["hits"] else {}
-        check("T33 extracts the exact BackupSize",
-              f33.get("BackupSize") == ["128849018880"], f33.get("BackupSize"))
-        check("T33 extracts the original FilePath",
-              f33.get("FilePath") and "FTP (172.17.1.252)" in f33["FilePath"][0],
-              f33.get("FilePath"))
-        check("T33 extracts EncryptionState",
-              f33.get("EncryptionState") == ["0"], f33.get("EncryptionState"))
-        check("T33 extracts JobName",
-              f33.get("JobName") == ["Ftp Job"], f33.get("JobName"))
-        check("T33 search is read-only", d33.sha() if hasattr(d33, "sha") else True)
-    finally:
-        d33.close()
-    check("T33 disk untouched", i33.sha() == sha33)
-
-    # encrypted case must be flagged, not silently treated as normal
-    vbm_enc = vbm_xml.replace(b'EncryptionState="0"', b'EncryptionState="2"')
-    p33b = os.path.join(tmp, "vbm_enc.img")
-    i33b = _Img(p33b, 16 * MIB)
-    i33b.put(4000, vbm_enc)
-    d33b = RawDisk(p33b, writable=False)
-    try:
-        r33b = find_vbm_metadata(d33b, window=8192)
-        f33b = r33b["hits"][0]["fields"]
-        check("T33b encrypted state is captured", f33b.get("EncryptionState") == ["2"])
-    finally:
-        d33b.close()
-
-    # absent .vbm yields no hits, not a crash
-    p33c = os.path.join(tmp, "no_vbm.img")
-    _Img(p33c, 4 * MIB)
-    d33c = RawDisk(p33c, writable=False)
-    try:
-        r33c = find_vbm_metadata(d33c)
-        check("T33c no .vbm present yields no hits", r33c["hits"] == [])
-    finally:
-        d33c.close()
-
-    ns33 = build_parser().parse_args(["--disk", "0", "--find-vbm",
-                                      "--find-vbm-window", "1024",
-                                      "--find-vbm-max-hits", "5"])
-    check("T33 --find-vbm parses", ns33.find_vbm is True)
-    check("T33 --find-vbm-window parses", ns33.find_vbm_window == 1024)
-    check("T33 --find-vbm-max-hits parses", ns33.find_vbm_max_hits == 5)
-
-    # ================================================================= T34 ==
-    # --carve-vbk must center on the given LBA with the requested margin, read
-    # only, and clamp instead of crashing when the window runs off the disk.
-    p34 = os.path.join(tmp, "carve.img")
-    i34 = _Img(p34, 64 * MIB)
-    marker34 = b"VBKCONTENTMARKER" * 4
-    center34 = 20000
-    i34.put(center34, marker34)
-    sha34 = i34.sha()
-    d34 = RawDisk(p34, writable=False)
-    outp34 = os.path.join(tmp, "carved_out.bin")
-    try:
-        r34 = carve_vbk(d34, center34, 0.001, outp34)  # ~1 MiB margin each side
-        check("T34 carve starts before the center LBA",
-              r34["start_lba"] <= center34 <= r34["start_lba"] + r34["sectors"],
-              (r34["start_lba"], r34["sectors"], center34))
-        with open(outp34, "rb") as f:
-            data34 = f.read()
-        rel = (center34 - r34["start_lba"]) * 512
-        check("T34 the marker is present at the expected offset inside the carve",
-              data34[rel:rel + len(marker34)] == marker34)
-        check("T34 carving is read-only", i34.sha() == sha34)
-
-        # a center near LBA 0 must clamp the head, not go negative or crash
-        r34b = carve_vbk(d34, 5, 0.001, outp34)
-        check("T34b start clamps to 0 near the beginning of the disk",
-              r34b["start_lba"] == 0, r34b["start_lba"])
-    finally:
-        d34.close()
-
-    ns34 = build_parser().parse_args(["--disk", "0", "--carve-vbk",
-                                      "234280000:4", "--carve-out", "x.bin"])
-    check("T34 --carve-vbk parses", ns34.carve_vbk == "234280000:4")
-    check("T34 --carve-out parses", ns34.carve_out == "x.bin")
-
-    # ================================================================= T35 ==
-    # --locate-vbk must find the true, block-aligned start of a file of known
-    # exact size, distinguishing it from surrounding zero padding AND from a
-    # nearby decoy high-entropy blob of the wrong size.
-    def _pseudo3(seed, size):
-        buf = bytearray()
-        h = hashlib.sha256(("locate%d" % seed).encode()).digest()
-        while len(buf) < size:
-            h = hashlib.sha256(h).digest()
-            buf += h
-        return bytes(buf[:size])
-
-    p35 = os.path.join(tmp, "locate.img")
-    i35 = _Img(p35, 128 * MIB)          # truncate() already zero-fills
-    s35 = 512
-    align35 = 65536
-    align_sec35 = align35 // s35        # 128 sectors per 64KiB block
-    true_start_lba = 40 * align_sec35
-    file_size = 20 * MIB
-    file_sectors = file_size // s35
-    content_a = _pseudo3(1, file_size)
-    i35.put(true_start_lba, content_a)
-
-    decoy_start_lba = true_start_lba + file_sectors + (10 * align_sec35)
-    content_b = _pseudo3(2, 6 * MIB)     # wrong size, should score worse/be excluded
-    i35.put(decoy_start_lba, content_b)
-
-    d35 = RawDisk(p35, writable=False)
-    try:
-        guess_center = true_start_lba + (file_sectors // 3)  # imprecise center
-        r35 = locate_vbk_start(d35, guess_center, file_size,
-                               align_bytes=align35, radius_gib=0.05)
-        check("T35 finds at least one candidate", bool(r35["candidates"]),
-              r35.get("reason"))
-        top35 = r35["candidates"][0] if r35["candidates"] else None
-        check("T35 top candidate is the true aligned start",
-              top35 and top35["start_lba"] == true_start_lba,
-              (top35["start_lba"] if top35 else None, true_start_lba))
-        check("T35 top candidate flags a boundary before and after",
-              top35 and top35["before"]["kind"] in ("zero", "sparse")
-              and top35["after"]["kind"] in ("zero", "sparse"),
-              top35)
-        check("T35 the wrong-size decoy is not the top pick",
-              not (top35 and top35["start_lba"] == decoy_start_lba))
-        check("T35 search stayed read-only",
-              open(p35, "rb").read(s35) == bytes(s35) or True)  # sanity, no write API used
-    finally:
-        d35.close()
-
-    ns35 = build_parser().parse_args(["--disk", "0", "--locate-vbk",
-                                      "93843712:18940297216",
-                                      "--locate-align", "65536",
-                                      "--locate-radius-gib", "1.5"])
-    check("T35 --locate-vbk parses", ns35.locate_vbk == "93843712:18940297216")
-    check("T35 --locate-align parses", ns35.locate_align == 65536)
-    check("T35 --locate-radius-gib parses", ns35.locate_radius_gib == 1.5)
-
-    # ================================================================= T36 ==
-    # The real failure mode just hit in the field: a dense repository where
-    # several NEIGHBOUR files score just as well on entropy/alignment as the
-    # true target, because they are all compressed data with similar-looking
-    # boundaries. Entropy scoring alone picked the wrong one. Content
-    # verification must be the tiebreaker.
-    def _pseudo4(seed, size):
-        buf = bytearray()
-        h = hashlib.sha256(("dense%d" % seed).encode()).digest()
-        while len(buf) < size:
-            h = hashlib.sha256(h).digest()
-            buf += h
-        return bytes(buf[:size])
-
-    p36 = os.path.join(tmp, "dense_repo.img")
-    i36 = _Img(p36, 96 * MIB)
-    s36 = 512
-    align36 = 65536
-    align_sec36 = align36 // s36
-    file_size36 = 10 * MIB
-    file_sectors36 = file_size36 // s36
-
-    # three back-to-back "files" of identical size/shape: neighbour, TARGET,
-    # neighbour -- indistinguishable by entropy/boundary score alone
-    neighbour_a_lba = 10 * align_sec36
-    target_lba = neighbour_a_lba + file_sectors36 + (2 * align_sec36)
-    neighbour_b_lba = target_lba + file_sectors36 + (2 * align_sec36)
-
-    content_neighbour_a = _pseudo4(10, file_size36)
-    content_target = bytearray(_pseudo4(20, file_size36))
-    content_neighbour_b = _pseudo4(30, file_size36)
-    # embed a real marker near the start of the TARGET only, like the VMDK
-    # descriptor blocks that showed up right after a genuine .vbk start
-    marker36 = b"<DescFileName>Active (172.17.1.253).vmdk</DescFileName>"
-    content_target[200:200 + len(marker36)] = marker36
-
-    i36.put(neighbour_a_lba, content_neighbour_a)
-    i36.put(target_lba, bytes(content_target))
-    i36.put(neighbour_b_lba, content_neighbour_b)
-
-    d36 = RawDisk(p36, writable=False)
-    try:
-        # center the search near the target but not exactly on it, the way a
-        # .vbm's own location is only approximately near its .vbk's body
-        guess_center36 = target_lba + (file_sectors36 // 4)
-        plain36 = locate_vbk_start(d36, guess_center36, file_size36,
-                                   align_bytes=align36, radius_gib=0.02)
-        # this is the documented failure mode: entropy alone may well NOT
-        # pick the true target first among equally-shaped neighbours
-        check("T36 entropy-only scoring finds multiple similar candidates",
-              len(plain36["candidates"]) >= 2, len(plain36["candidates"]))
-
-        verified36 = locate_vbk_start_verified(
-            d36, guess_center36, file_size36, "Active (172.17.1.253)",
-            align_bytes=align36, radius_gib=0.02, verify_top_n=50,
-            probe_bytes=2 * MIB)
-        check("T36 verification finds at least one confirmed hit",
-              verified36["verify_hits"] >= 1, verified36["verify_hits"])
-        top_verified = verified36["candidates"][0]
-        check("T36 the verified top candidate is the TRUE target, not a neighbour",
-              top_verified["start_lba"] == target_lba,
-              (top_verified["start_lba"], target_lba, neighbour_a_lba, neighbour_b_lba))
-        check("T36 the verified candidate is marked verified=True",
-              top_verified["verified"] is True)
-        check("T36 the match context contains the marker text",
-              top_verified.get("match_context") and
-              "Active (172.17.1.253)" in top_verified["match_context"],
-              top_verified.get("match_context"))
-        check("T36 neighbours are not falsely marked verified",
-              not any(c["start_lba"] in (neighbour_a_lba, neighbour_b_lba)
-                     and c["verified"] for c in verified36["candidates"]))
-    finally:
-        d36.close()
-
-    ns36 = build_parser().parse_args(["--disk", "0", "--locate-vbk",
-                                      "93843712:18940297216",
-                                      "--locate-verify", "Active (172.17.1.253)",
-                                      "--locate-verify-top-n", "25",
-                                      "--locate-probe-mib", "4"])
-    check("T36 --locate-verify parses", ns36.locate_verify == "Active (172.17.1.253)")
-    check("T36 --locate-verify-top-n parses", ns36.locate_verify_top_n == 25)
-    check("T36 --locate-probe-mib parses", ns36.locate_probe_mib == 4)
-
-    # ================================================================= T37 ==
-    # Regression: keep_top must actually respect verify_top_n, not silently
-    # cap at 20. The real-world symptom was --locate-verify-top-n 3856
-    # reporting "20 تای برتر" checked regardless of the requested value.
-    d37 = RawDisk(p36, writable=False)
-    try:
-        r37_default = locate_vbk_start(d37, guess_center36, file_size36,
-                                       align_bytes=align36, radius_gib=0.02)
-        check("T37 default keep_top is capped at 20",
-              len(r37_default["candidates"]) <= 20, len(r37_default["candidates"]))
-
-        r37_more = locate_vbk_start(d37, guess_center36, file_size36,
-                                    align_bytes=align36, radius_gib=0.02,
-                                    keep_top=500)
-        check("T37 keep_top=500 returns more than 20 when available",
-              len(r37_more["candidates"]) == r37_default["scanned_candidates"] or
-              len(r37_more["candidates"]) > 20,
-              (len(r37_more["candidates"]), r37_default["scanned_candidates"]))
-
-        v37 = locate_vbk_start_verified(
-            d37, guess_center36, file_size36, "Active (172.17.1.253)",
-            align_bytes=align36, radius_gib=0.02, verify_top_n=500,
-            probe_bytes=2 * MIB)
-        check("T37 verify_top_n=500 is honoured, not silently capped at 20",
-              v37["verify_checked"] > 20 or
-              v37["verify_checked"] == r37_default["scanned_candidates"],
-              v37["verify_checked"])
-    finally:
-        d37.close()
-
-    # ================================================================= T38 ==
-    # --locate-verify-file must let a needle containing a literal double
-    # quote (the exact character that broke PowerShell argument passing in
-    # the field) reach locate_vbk_start_verified unharmed, and must parse via
-    # the real CLI parser too.
-    vfile38 = os.path.join(tmp, "needle.txt")
-    with open(vfile38, "w", encoding="utf-8") as f:
-        f.write('VMFS "Active (172.17.1.253)\n')
-    parser38 = build_parser()
-    ns38 = parser38.parse_args(["--disk", "0", "--locate-vbk",
-                                "93843712:18940297216",
-                                "--locate-verify-file", vfile38])
-    check("T38 --locate-verify-file parses", ns38.locate_verify_file == vfile38)
-    with open(vfile38, "r", encoding="utf-8") as f:
-        read_back = f.readline().rstrip("\r\n")
-    check("T38 the embedded double-quote survives a file round-trip",
-          read_back == 'VMFS "Active (172.17.1.253)', read_back)
-
-    # ================================================================= T39 ==
-    # Regression: PowerShell's Out-File -Encoding utf8 prepends a BOM, which
-    # made the needle start with an invisible character and never match
-    # anything on disk. The dispatch path must strip it.
-    vfile39 = os.path.join(tmp, "needle_bom.txt")
-    with open(vfile39, "wb") as f:
-        f.write(b"\xef\xbb\xbf")               # UTF-8 BOM
-        f.write('VMFS "Active (172.17.1.253)\n'.encode("utf-8"))
-    with open(vfile39, "r", encoding="utf-8-sig") as f:
-        stripped = f.readline().rstrip("\r\n")
-    check("T39 utf-8-sig strips a leading BOM from the needle file",
-          stripped == 'VMFS "Active (172.17.1.253)' and not stripped.startswith("\ufeff"),
-          repr(stripped))
-
-    # ================================================================= T40 ==
-    # --find-name-file must mirror --locate-verify-file: read the needle from
-    # a file (avoiding shell quoting of characters like embedded double
-    # quotes) and strip a leading BOM if PowerShell's Out-File put one there.
-    vfile40 = os.path.join(tmp, "fn_needle.txt")
-    with open(vfile40, "wb") as f:
-        f.write(b"\xef\xbb\xbf")
-        f.write('VMFS "Active (172.17.1.253)\n'.encode("utf-8"))
-    with open(vfile40, "r", encoding="utf-8-sig") as f:
-        read40 = f.readline().rstrip("\r\n")
-    check("T40 find-name-file strips a leading BOM",
-          read40 == 'VMFS "Active (172.17.1.253)', repr(read40))
-
-    ns40 = build_parser().parse_args(["--disk", "0", "--find-name-file", vfile40])
-    check("T40 --find-name-file parses", ns40.find_name_file == vfile40)
-
-    p40 = os.path.join(tmp, "fn_disk.img")
-    i40 = _Img(p40, 8 * MIB)
-    i40.put(2000, read40.encode("ascii") + b"\x00" * 32)
-    d40 = RawDisk(p40, writable=False)
-    try:
-        r40 = find_name(d40, read40)
-        check("T40 the BOM-stripped needle actually matches on disk",
-              len(r40["hits"]) >= 1, r40["hits"])
-    finally:
-        d40.close()
-
-    QUIET, EXPLAIN = prev_q, prev_e
-    failed = [n for n, okk in results if not okk]
-    print("\n%d/%d passed" % (len(results) - len(failed), len(results)))
-    if failed:
-        print("FAILED: %s" % ", ".join(failed))
-        return EXIT_TESTFAIL
-    print("test images kept in %s" % tmp)
-    return EXIT_OK
+    # Field scenarios are preserved byte-for-byte in the reference fixture;
+    # the harness also runs those scenarios against the current forensic engine
+    # and runs the v2 write-safety and fault-injection tests on synthetic images.
+    from tests.run_regressions import run
+    return run()
 
 
 # =============================================================================
@@ -7686,6 +5789,7 @@ def auto_one(path, args):
             out("   " + ln)
         plans = suggest_plans(disk, r)
         print_plans(disk, r, plans)
+        safety.persist_report(sys.modules[__name__], disk, r, args, triage=tri)
         summary.update(
             size=disk.size, sector=disk.sector, scheme=r.scheme,
             partitions=len(r.parts), carved=len(r.carved),
@@ -7700,16 +5804,10 @@ def auto_one(path, args):
 
 def auto_run(args):
     """--auto : one command, every answer, nothing written."""
-    global REPORTFILE
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    global REPORTFILE, LOGFILE
+    ts = str(uuid.uuid4())
     txt = args.auto_out or ("diskdoctor_report_%s.txt" % ts)
     jsn = os.path.splitext(txt)[0] + ".json"
-    try:
-        REPORTFILE = open(txt, "w", encoding="utf-8")
-    except Exception as e:
-        err("cannot open report file: %s" % e)
-        REPORTFILE = None
-
     targets = []
     if args.all or not args.disk:
         disks = list_disks()
@@ -7729,6 +5827,23 @@ def auto_run(args):
             targets = [resolve_target(args.disk)] if args.disk else targets
     else:
         targets = [resolve_target(args.disk)]
+
+    # Validate every source/output relationship before opening any output.
+    try:
+        for target in targets:
+            with RawDisk(target, sector_size=args.sector_size, writable=False) as source:
+                for destination in (txt, jsn, args.log, getattr(args, "state_dir", "DiskDoctor")):
+                    if destination:
+                        safety.ensure_destination(sys.modules[__name__], source, destination)
+        REPORTFILE = open(txt, "x", encoding="utf-8")
+        if args.log and LOGFILE is None:
+            LOGFILE = open(args.log, "x", encoding="utf-8")
+    except (core.SafetyError, DiskError, OSError) as e:
+        err(str(e))
+        if REPORTFILE:
+            REPORTFILE.close()
+            REPORTFILE = None
+        return EXIT_BLOCKED
 
     out("")
     info("حالت auto: فقط خواندن. %d هدف. گزارش در %s" % (len(targets), txt))
@@ -7952,13 +6067,13 @@ def build_parser():
     g.add_argument("--allow-inferred", action="store_true",
                    help="اجازه صریح برای اقدام‌های INFERRED_REBUILD")
     g.add_argument("--yes", action="store_true", help="رد شدن از تایید تایپی")
-    g.add_argument("--force", action="store_true", help="عبور از blockerها")
+    g.add_argument("--force", action="store_true", help="deprecated; never authorizes a write or bypasses verification")
     g.add_argument("--offline", action="store_true", help="Offline کردن دیسک (ویندوز)")
     g.add_argument("--backup-dir", default="diskdoctor_backups", help="محل Journal")
 
     g = p.add_argument_group("Journal")
-    g.add_argument("--undo", metavar="JOURNAL", help="برگرداندن یک عملیات")
-    g.add_argument("--inspect", metavar="JOURNAL", help="نمایش وضعیت یک Journal")
+    g.add_argument("--undo", metavar="TRANSACTION_UUID", help="برگرداندن یک عملیات")
+    g.add_argument("--inspect", metavar="TRANSACTION_UUID", help="نمایش وضعیت یک Journal")
     g.add_argument("--check-journals", action="store_true",
                    help="یافتن Journalهای ناتمام در backup-dir")
 
@@ -7982,6 +6097,13 @@ def build_parser():
     g.add_argument("--verbose", action="store_true", help="hexdiff تغییرات")
     g.add_argument("--self-test", action="store_true", help="تست داخلی")
     g.add_argument("--help-full", action="store_true", help="راهنمای کامل")
+    g.add_argument("--state-dir", default="DiskDoctor", help="persistent reports/transactions/checkpoints/logs")
+    g.add_argument("--authoritative-size", type=int, help="independent authoritative source size in bytes")
+    g.add_argument("--size-provenance", help="recorded source of authoritative size; OPERATOR_SUPPLIED")
+    g.add_argument("--authorize-external-mutation", action="store_true", help="separate authorization for nontransactional external mutation")
+    g.add_argument("--image-resume", action="store_true", help="resume validated image checkpoint")
+    g.add_argument("--image-sha256", action="store_true", help="reopen and hash completed image")
+    g.add_argument("--source-sha256", action="store_true", help="bind plan to full image SHA-256 in addition to samples")
     return p
 
 
@@ -8008,6 +6130,11 @@ def main(argv=None):
     setup_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        safety.protect_outputs(sys.modules[__name__], args)
+    except (core.SafetyError, DiskError, OSError) as e:
+        err(str(e))
+        return EXIT_BLOCKED
 
     if getattr(args, "baseline", None):
         try:
@@ -8031,28 +6158,29 @@ def main(argv=None):
     VERBOSE = args.verbose
     EXPLAIN = args.explain
     C.enabled = not args.no_color and sys.stdout.isatty()
-    if args.log:
+    if args.log and not ((args.auto or args.all) and not args.disk):
         try:
-            LOGFILE = open(args.log, "a", encoding="utf-8")
+            LOGFILE = open(args.log, "x", encoding="utf-8")
         except Exception as e:
             err("cannot open log: %s" % e)
 
     try:
         if args.help_full:
-            print(__doc__)
+            parser.print_help()
+            out("v2 architecture and current safety rules: docs/HARDENING.md")
             return EXIT_OK
         if args.self_test:
             return self_test()
         if args.list:
             return print_disk_list()
         if args.inspect:
-            inspect_journal(args.inspect)
+            safety.inspect(sys.modules[__name__], args)
             return EXIT_OK
         if args.check_journals:
-            return check_journals(args.backup_dir)
+            return check_journals(safety.transaction_root(args))
         if args.undo:
             try:
-                undo_journal(args.undo, force=args.force)
+                safety.undo(sys.modules[__name__], args)
                 return EXIT_OK
             except Exception as e:
                 err("undo failed: %s" % e)
@@ -8079,7 +6207,8 @@ def main(argv=None):
         try:
             if args.image_out:
                 make_image(disk, args.image_out, limit=args.image_limit,
-                           retries=args.image_retries, fill=args.image_fill)
+                           retries=args.image_retries, fill=args.image_fill,
+                           resume=args.image_resume, final_hash=args.image_sha256)
             if args.find_vbm:
                 vres = find_vbm_metadata(disk, limit=args.find_limit,
                                          window=args.find_vbm_window,
@@ -8194,9 +6323,12 @@ def main(argv=None):
                     doc["triage"] = tri
                 _atomic_write_json(args.json, doc)
                 ok("JSON report: %s" % args.json)
+            safety.persist_report(sys.modules[__name__], disk, r, args, triage=tri)
             print_plans(disk, r, suggest_plans(disk, r))
             if args.action:
-                return execute_action(disk, r, args, args.action)
+                rc = execute_action(disk, r, args, args.action)
+                safety.persist_report(sys.modules[__name__], disk, r, args, triage=tri, final=True)
+                return rc
             info(T("readonly_note"))
             return EXIT_OK
         finally:
@@ -8212,3 +6344,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("")
         sys.exit(EXIT_CANCEL)
+    except (core.SafetyError, DiskError, OSError, ValueError) as e:
+        err(str(e))
+        sys.exit(EXIT_ERR)

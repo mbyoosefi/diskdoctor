@@ -403,11 +403,12 @@ class Transaction:
                     stage = "FAILED_READBACK"
                     self.fault("before_readback")
                     data = self.disk.read_at(spec["offset"], spec["length"])
-                    durable_create(os.path.join(self.directory, "readback_%04d.bin" % len(readbacks)), data)
+                    readback_name = "readback_%04d.bin" % spec['artifact_offset']
+                    durable_create(os.path.join(self.directory, readback_name), data)
                     if len(data) != spec["length"] or digest(data) != spec["sha256_planned"] or data != p.new:
                         raise SafetyError("FAILED_READBACK", "exact byte verification failed")
                     readbacks.extend(data)
-                    self.event("READBACK_VERIFIED", spec, sha256=digest(data))
+                    self.event("READBACK_VERIFIED", spec, sha256=digest(data), artifact=readback_name)
                     p.status = "done"
                     written += spec["length"]
                     self.fault("after_readback")
@@ -493,6 +494,17 @@ def inspect_transaction(root, transaction_id):
             raise SafetyError("FAILED_JOURNAL", "commit lacks structural verification")
         if manifest["semantic_required"] and not any(e["state"] == "SEMANTIC_VERIFIED" for e in events):
             raise SafetyError("FAILED_JOURNAL", "commit lacks semantic verification")
+        combined = os.path.join(directory, 'readback.bin')
+        if os.path.getsize(combined) != manifest['artifact_length'] or file_hash(combined) != manifest['planned_sha256']:
+            raise SafetyError('FAILED_READBACK', 'combined readback artifact changed')
+    for e in events:
+        if e['state'] == 'READBACK_VERIFIED':
+            artifact = e['metadata']['artifact']
+            if os.path.basename(artifact) != artifact:
+                raise SafetyError('FAILED_JOURNAL', 'invalid readback artifact path')
+            path = os.path.join(directory, artifact)
+            if os.path.getsize(path) != e['length'] or file_hash(path) != e['metadata']['sha256']:
+                raise SafetyError('FAILED_READBACK', 'persisted readback artifact changed')
     state = events[-1]["state"]
     return {"manifest": manifest, "events": events, "state": state,
             "interrupted": state not in ("COMMITTED", "ROLLED_BACK_VERIFIED", "FAILED_PREWRITE"),
