@@ -32,12 +32,17 @@ offlined, repaired or written during implementation/testing.
 
 | OS | Python | Result |
 |---|---|---|
-| Ubuntu 22.04 | 3.8 | pending remote run |
-| Ubuntu 22.04 | 3.10 | pending remote run |
-| Ubuntu 22.04 | 3.12 | pending remote run |
-| Windows 2022 | 3.8 | pending remote run |
-| Windows 2022 | 3.10 | pending remote run |
-| Windows 2022 | 3.12 | pending remote run |
+| Ubuntu 22.04 | 3.8 | passed |
+| Ubuntu 22.04 | 3.10 | passed |
+| Ubuntu 22.04 | 3.12 | passed |
+| Windows 2022 | 3.8 | passed |
+| Windows 2022 | 3.10 | passed |
+| Windows 2022 | 3.12 | passed |
+
+All six jobs passed on implementation/documentation commit
+`32bfb47f9a13235b46d2585df43faaa81087a23b` in
+[workflow run 37123496389](https://github.com/mbyoosefi/diskdoctor/actions/runs/37123496389).
+The subsequent validation-record commit changes this documentation only.
 
 Each job compiles syntax, runs the unit/write-safety/fault-injection/tamper and
 read-only invariance suite, then runs the preserved self-test scenarios.
