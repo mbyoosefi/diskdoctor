@@ -1,7 +1,23 @@
 # DiskDoctor
 
-> **اسکن و ترمیم ایمن دیسک، بر پایهٔ شواهد — در یک فایل پایتون و بدون وابستگی خارجی.**
-> **Evidence-based disk scanning and safe repair — one dependency-free Python file.**
+> **2.0.0-rc1 hardening candidate:** runtime distribution now includes
+> `diskdoctor.py`, `diskdoctor_core.py`, `diskdoctor_safety.py` and
+> `diskdoctor_imaging.py`. No third-party Python packages are required.
+> See [current v2 commands and safety model](docs/HARDENING.md),
+> [validation](docs/VALIDATION.md) and [complete mutation audit](docs/MUTATION_AUDIT.md).
+> The v1.9.5 forensic engine and field scenarios are preserved. Inferred
+> reconstruction, mutable-journal undo and force bypass are no longer write paths.
+
+<div dir="rtl" align="right">
+
+نسخهٔ جدید، نامزد بررسی ارتقای ایمنی است. هستهٔ تشخیص و بازیابی حفظ شده و
+تراکنش‌ها، تأیید نوشتن و بازگردانی سخت‌گیرانه‌تر شده‌اند.
+برای دستورهای فعلی، راهنمای نسخهٔ جدید را بخوانید.
+
+</div>
+
+> **اسکن دیسک و ترمیم مبتنی بر شواهد، بدون وابستگی خارجی.**
+> **Evidence-based disk scanning and controlled transactional repair — no third-party dependencies.**
 
 [English](#english) · [فارسی](#فارسی) · [مستندات کامل / Full documentation](DOCS.md) · [Changelog](CHANGELOG.md)
 
@@ -64,7 +80,7 @@ When structural repair isn't possible — for example when a filesystem's own me
 
 ### Highlights
 
-- One file, Python 3.8+, with no third-party dependencies
+- Python 3.8+, with no third-party dependencies; distribute all four runtime modules
 - Runs on Windows, Linux, and raw disk-image files
 - Read-only by default; no change is made without `--apply`
 - Persian is the default interface language; use `--lang en` for English

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.0-rc1 (review candidate)
+
+- Preserve the v1.9.5 forensic algorithms and all 229 reference assertions.
+- Bind plans to source identity, structural samples and optional full SHA-256.
+- Replace mutable journals with UUID transactions, verified immutable artifacts,
+  append-only chained events and exact readback evidence.
+- Remove all force write bypasses; make sync/readback/structural/semantic failures fatal.
+- Require absolute system-disk protection and independently confirmed Windows
+  offline control; deliberately restore original offline/read-only state.
+- Block unproven semantic identity, competing historical copies and inferred
+  reconstruction; do not invent MBR active flags or GPT ESP/GUID/name/attributes.
+- Require authoritative size provenance for geometry repair and validated redundant
+  bytes for CRC recalculation.
+- Add independent prospective/post-write structural oracles and NTFS metadata checks.
+- Validate and verify UUID rollback, including interrupted transactions.
+- Separate and audit nontransactional external mutation authorization.
+- Add exclusively created forensic images, chained checkpoints, validated resume,
+  final size/hash checks and explicit incomplete-search scope.
+- Add synthetic write-safety/fault-injection tests and a six-job Windows/Ubuntu CI matrix.
+- See docs/HARDENING.md for intentionally unsupported cases and UNKNOWN semantics.
+
 ## 1.9.5
 - `--find-name-file PATH`: read the --find-name search text from a file, the
   same protection --locate-verify-file already had. The identical shell

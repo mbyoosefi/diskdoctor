@@ -1,5 +1,11 @@
 # DiskDoctor — راهنمای کامل / Full Guide
 
+> Historical v1 forensic guide. The authoritative current v2 mutation, rollback,
+> external authorization and distribution instructions are in
+> [HARDENING.md](docs/HARDENING.md). V1 force overrides and mutable journal rollback
+> are disabled in v2. Historical repair classifications below do not authorize
+> a v2 write.
+
 [English](#english) · [فارسی](#فارسی) · [README](README.md)
 
 ---
