@@ -1,16 +1,16 @@
 __pycache__/
 *.pyc
 *.pyo
-
-# runtime artifacts this tool produces next to itself
+DiskDoctor/
 diskdoctor_backups/
-diskdoctor_report_*.txt
-diskdoctor_report_*.json
+diskdoctor_report_*
 *.img
-*.img.badmap.json
+*.badmap.json
+*.checkpoints/
 struct_*_*.bin
 struct_*_*.json
 journal_*.json
-
 .DS_Store
 Thumbs.db
+safety-test.log
+regression-test.log

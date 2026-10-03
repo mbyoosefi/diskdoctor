@@ -1,0 +1,23 @@
+name: Synthetic regression and write safety
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+        python: ['3.8', '3.10', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Syntax validation
+        run: python -m compileall -q diskdoctor.py diskdoctor_core.py diskdoctor_safety.py diskdoctor_imaging.py tests
+      - name: Unit, mutation, fault, tamper and read-only invariance tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+      - name: Field scenarios and self-test suite
+        run: python diskdoctor.py --self-test --lang en --no-color
